@@ -254,12 +254,55 @@ cat > /usr/sbin/mxb <<'EOF'
 . /usr/lib/mxc
 si(){ S=$1;R="$(uci -q get wireless.$S.device)";J="$(ubus call network.wireless status 2>/dev/null)";for N in 0 1 2 3;do [ "$(echo "$J"|jsonfilter -e "@.$R.interfaces[$N].section" 2>/dev/null)" = "$S" ]&&{ echo "$J"|jsonfilter -e "@.$R.interfaces[$N].ifname";return;};done;}
 up(){ I="$(si $1)";[ -n "$I" ]&&iw dev "$I" link 2>/dev/null|grep -q '^Connected to ';}
-rp(){ S=$1;up "$S"&&return;R="$(uci -q get wireless.$S.device)";Q="$(uci -q get wireless.$S.ssid)";[ -n "$R" ]&&[ -n "$Q" ]||return;T=/tmp/mxb.$$;sr "$R" "$T" 20||{ rm -f "$T";return;};LINE="$(awk -F '\t' -v s="$Q" '$1==s{print $2" "$5;exit}' "$T")";rm -f "$T";C=${LINE%% *};B=${LINE#* };case "$C" in ''|*[!0-9]*) return;;esac;[ -n "$B" ]||return;CHANGED=0;[ "$(uci -q get wireless.$S.bssid)" = "$B" ]||{ uci set wireless.$S.bssid="$B";CHANGED=1; };[ "$(uci -q get wireless.$R.channel)" = "$C" ]||{ uci set wireless.$R.channel="$C";CHANGED=1; };[ "$CHANGED" = 1 ]&&{ uci commit wireless;wifi reload "$R";};}
+rp(){
+S=$1;M="$(mode)";case "$M" in wds|repeater);;*)return;;esac
+up "$S"&&return
+R="$(uci -q get wireless.$S.device)";Q="$(uci -q get wireless.$S.ssid)"
+[ -n "$R" ]&&[ -n "$Q" ]&&[ "$(uci -q get wireless.$S.disabled)" = 0 ]||return
+T=/tmp/mxb.$$;sr "$R" "$T" 20||{ rm -f "$T";return; }
+[ "$(mode)" = "$M" ]&&[ "$(uci -q get wireless.$S.device)" = "$R" ]&&[ "$(uci -q get wireless.$S.ssid)" = "$Q" ]&&[ "$(uci -q get wireless.$S.disabled)" = 0 ]&&! up "$S"||{ rm -f "$T";return; }
+LINE="$(awk -F '\t' -v s="$Q" '$1==s{print $2" "$5;exit}' "$T")";rm -f "$T"
+C=${LINE%% *};B=${LINE#* };case "$C" in ''|*[!0-9]*)return;;esac
+[ -n "$B" ]||return
+CHANGED=0
+[ "$(uci -q get wireless.$S.bssid)" = "$B" ]||{ uci set wireless.$S.bssid="$B";CHANGED=1; }
+[ "$(uci -q get wireless.$R.channel)" = "$C" ]||{ uci set wireless.$R.channel="$C";CHANGED=1; }
+[ "$CHANGED" = 1 ]&&{ uci commit wireless;wifi reload "$R"; }
+}
 sw(){ P="$(si mx_primary)";B="$(si mx_backup)";[ -n "$P" ]&&ip link set "$P" nomaster 2>/dev/null;[ -n "$B" ]&&ip link set "$B" nomaster 2>/dev/null;I="$P";[ "$1" = backup ]&&I="$B";if [ -n "$I" ]&&ip link set "$I" master br-lan 2>/dev/null;then ubus call network.interface.lan renew >/dev/null 2>&1;fi;echo "$1">/tmp/mx4200-backhaul-active;}
 case "$1" in
 primary|backup) X=$1;[ "$X" = backup ]&&uci -q get wireless.mx_backup >/dev/null||[ "$X" = primary ]||exit 1;uci set wireless.mx_primary.disabled=$([ "$X" = primary ]&&echo 0||echo 1);uci -q get wireless.mx_backup >/dev/null&&uci set wireless.mx_backup.disabled=$([ "$X" = backup ]&&echo 0||echo 1);uci commit wireless;wifi reload;[ "$(mode)" = wds ]&&{ sleep 2;sw "$X"; };;
 auto) uci set wireless.mx_primary.disabled=0;uci -q get wireless.mx_backup >/dev/null&&uci set wireless.mx_backup.disabled=0;uci commit wireless;wifi reload;;
-guard) A="$(cat /tmp/mx4200-backhaul-active 2>/dev/null||echo primary)";F=0;S=0;K=29;while sleep 1;do M="$(mode)";[ "$M" = router ]&&continue;P=0;B=0;up mx_primary&&P=1;up mx_backup&&B=1;if [ "$M" = wds ];then D="$(uci -q get wireless.mx_primary.disabled)$(uci -q get wireless.mx_backup.disabled)";if [ "$D" = 00 ];then if [ "$A" = primary ];then [ "$P" = 1 ]&&F=0||F=$((F+1));[ "$F" -ge 2 ]&&[ "$B" = 1 ]&&{ A=backup;F=0;S=0;sw backup;};else [ "$P" = 1 ]&&S=$((S+1))||S=0;[ "$S" -ge 30 ]&&{ A=primary;S=0;sw primary;};[ "$B" = 1 ]||[ "$P" = 0 ]||{ A=primary;sw primary;};fi;else [ "$(uci -q get wireless.mx_primary.disabled)" = 0 ]&&A=primary||A=backup;fi;I="$(si mx_$A)";[ -n "$I" ]&&[ -e "/sys/class/net/br-lan/brif/$I" ]||sw "$A";fi;K=$((K+1));[ "$K" -ge 30 ]&&{ [ "$P" = 1 ]||rp mx_primary;[ "$B" = 1 ]||rp mx_backup;K=0;};done;;
+guard)
+A="$(cat /tmp/mx4200-backhaul-active 2>/dev/null||echo primary)";S=0;K=29;SCAN_PID=''
+trap '[ -z "$SCAN_PID" ] || kill "$SCAN_PID" 2>/dev/null' EXIT
+while sleep 1;do
+M="$(mode)";[ "$M" = router ]&&continue
+P=0;B=0;up mx_primary&&P=1;up mx_backup&&B=1
+if [ "$M" = wds ];then
+D="$(uci -q get wireless.mx_primary.disabled)$(uci -q get wireless.mx_backup.disabled)"
+if [ "$D" = 00 ];then
+if [ "$A" = primary ];then
+[ "$P" = 0 ]&&[ "$B" = 1 ]&&{ A=backup;S=0;sw backup; }
+else
+[ "$P" = 1 ]&&S=$((S+1))||S=0
+[ "$S" -ge 30 ]&&{ A=primary;S=0;sw primary; }
+[ "$B" = 1 ]||[ "$P" = 0 ]||{ A=primary;S=0;sw primary; }
+fi
+else
+[ "$(uci -q get wireless.mx_primary.disabled)" = 0 ]&&A=primary||A=backup
+fi
+I="$(si mx_$A)";[ -n "$I" ]&&[ -e "/sys/class/net/br-lan/brif/$I" ]||sw "$A"
+fi
+K=$((K+1))
+if [ "$K" -ge 30 ];then
+if [ -z "$SCAN_PID" ] || ! kill -0 "$SCAN_PID" 2>/dev/null;then
+{ [ "$B" = 1 ] || rp mx_backup; [ "$P" = 1 ] || rp mx_primary; } &
+SCAN_PID=$!
+fi
+K=0
+fi
+done;;
 *) echo 'mxb: auto|primary|backup|guard';exit 1;;esac
 EOF
 chmod 755 /usr/sbin/mxb
