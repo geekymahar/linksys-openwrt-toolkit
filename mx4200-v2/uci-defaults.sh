@@ -105,16 +105,37 @@ cat > /root/mxr <<'EOF'
 TARGET="$1"
 case "$TARGET" in wds|repeater);;*) exit 1;;esac
 scan_band(){
-R=$1;L=$2;T=/tmp/mx4200-scan.$$
+R=$1;L=$2;MATCH_SSID=${3:-};REUSE_PASS=${4:-};T=/tmp/mx4200-scan.$$
 echo;echo "Scanning $L..."
 sr "$R" "$T"||{ rm -f "$T";echo "$L scan failed (4 passes).";return 1; }
-N=0;TAB="$(printf '\t')";while IFS="$TAB" read -r S C G E B;do N=$((N+1));printf '%2d) %s  [ch %s, %s dBm, %s]\n' "$N" "$S" "$C" "$G" "$E";done<"$T"
-while true;do printf 'Select network number (0 = rescan): ';read -r P;[ "$P" = 0 ]&&{ rm -f "$T";return 2; };case "$P" in *[!0-9]*|'') continue;;esac;LINE="$(sed -n "${P}p" "$T")";[ -n "$LINE" ]&&break;done
+TAB="$(printf '\t')";LINE=''
+if [ -n "$MATCH_SSID" ];then
+while IFS= read -r ROW;do [ "${ROW%%"$TAB"*}" = "$MATCH_SSID" ]&&{ LINE="$ROW";break; };done<"$T"
+[ -n "$LINE" ]||{ rm -f "$T";echo "$MATCH_SSID not found on $L.";return 1; }
+else
+N=0;while IFS="$TAB" read -r S C G E B;do N=$((N+1));printf '%2d) %s  [ch %s, %s dBm, %s]\n' "$N" "$S" "$C" "$G" "$E";done<"$T"
+while true;do printf 'Select network number (0 = rescan): ';read -r P||{ rm -f "$T";return 1; };[ "$P" = 0 ]&&{ rm -f "$T";return 2; };case "$P" in *[!0-9]*|'') continue;;esac;LINE="$(sed -n "${P}p" "$T")";[ -n "$LINE" ]&&break;done
+fi
 IFS="$TAB" read -r SEL_SSID SEL_CHANNEL _ SEL_ENC_TEXT SEL_BSSID <<EOT
 $LINE
 EOT
 SEL_ENC="$(e2u "$SEL_ENC_TEXT")";rm -f "$T";[ "$SEL_ENC" != unsupported ]||{ echo "Unsupported: $SEL_ENC_TEXT";return 1; };SEL_PASS=''
-if nk "$SEL_ENC";then rs "Password for $SEL_SSID: ";SEL_PASS="$SECRET";[ -n "$SEL_PASS" ]||{ echo 'Password required';return 1; };fi
+case "$SEL_ENC" in
+psk|psk2)
+echo "Scan security: $SEL_ENC_TEXT"
+while true;do
+printf 'Upstream security: 1=WPA2-PSK 2=legacy WPA-PSK [1]: ';read -r ESEL||return 1
+case "$ESEL" in ''|1)SEL_ENC=psk2;break;;2)SEL_ENC=psk;break;;*)echo 'Choose 1 or 2.';;esac
+done;;
+esac
+if [ -n "$MATCH_SSID" ]&&[ -n "$REUSE_PASS" ]&&! nk "$SEL_ENC";then
+echo "$L network has no password; choose it separately."
+return 1
+fi
+if nk "$SEL_ENC";then
+if [ -n "$MATCH_SSID" ];then SEL_PASS="$REUSE_PASS";else rs "Password for $SEL_SSID: ";SEL_PASS="$SECRET";fi
+[ -n "$SEL_PASS" ]||{ echo 'Password required';return 1; }
+fi
 }
 uci -q get network.usbwan >/dev/null 2>&1 && /usr/sbin/mxu off-quiet
 savecur
@@ -130,10 +151,16 @@ while true;do scan_band "$PR" "$PL";R=$?;[ "$R" = 0 ]&&break;[ "$R" = 2 ]&&conti
 PSSID="$SEL_SSID";PENC="$SEL_ENC";PPASS="$SEL_PASS";PCHAN="$SEL_CHANNEL";PAP="$SEL_BSSID"
 echo;echo "Selected: $PSSID ($PL ch $PCHAN, $PENC)"
 BACKUP=0;BSSID='';BENC='';BPASS='';BRAD='';BCHAN='';BAP=''
-printf "Backup $OL? 1=yes 0=no: ";read -r B
-if [ "$B" = 1 ];then
-while true;do scan_band "$OR" "$OL";R=$?;[ "$R" = 0 ]&&{ BACKUP=1;BRAD="$OR";BSSID="$SEL_SSID";BENC="$SEL_ENC";BPASS="$SEL_PASS";BCHAN="$SEL_CHANNEL";BAP="$SEL_BSSID";break; };[ "$R" = 2 ]&&continue;echo '1=retry 2=skip 0=cancel';read -r A;case "$A" in 1) continue;;2) break;;*) exit 1;;esac;done
-fi
+while true;do
+echo;printf 'Backup 2.4 GHz: 1=same SSID/password 2=choose Wi-Fi 0=skip: ';read -r B||break
+case "$B" in
+1)scan_band "$OR" "$OL" "$PSSID" "$PPASS";R=$?;;
+2)scan_band "$OR" "$OL";R=$?;;
+0|'')break;;
+*)continue;;
+esac
+[ "$R" = 0 ]&&{ BACKUP=1;BRAD="$OR";BSSID="$SEL_SSID";BENC="$SEL_ENC";BPASS="$SEL_PASS";BCHAN="$SEL_CHANNEL";BAP="$SEL_BSSID";echo "Backup: $BSSID ($OL ch $BCHAN, $BENC)";break; }
+done
 rs "Password for ${PSSID}-RPT Wi-Fi: "
 CLIENT_PASS="$SECRET"
 [ -n "$CLIENT_PASS" ] || { echo 'Client password required'; exit 1; }
@@ -613,6 +640,7 @@ echo 'mx          Interactive setup menu (start here)'
 echo 'mxstatus    Show mode, addresses, upstream route and LED status'
 echo 'mxrouter    Restore router mode or a saved router profile'
 echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
+echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
 echo 'mxusb       Set USB tether as primary, backup or off'
 echo 'mxled       Install or control the optional LED module'
 echo 'In mx: 4    Set backhaul to auto, 5 GHz primary or 2.4 GHz backup'
