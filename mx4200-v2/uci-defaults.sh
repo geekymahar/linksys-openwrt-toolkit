@@ -46,6 +46,14 @@ PROFILE_FILES='network wireless dhcp firewall system'
 u(){ uci set "$1";}
 wifi_clear(){ for S in $(uci show wireless 2>/dev/null|awk -F= '$2=="wifi-iface"{print $1}');do uci -q delete "$S";done;}
 ds(){ for S in $(uci show network 2>/dev/null|awk -F= '$2=="device"{print $1}');do [ "$(uci -q get "$S.name")" = "$1" ]&&{ echo "$S";return;};done;return 1;}
+rwan(){
+B="$(ds br-lan)";[ -n "$B" ]||return 1
+uci -q del_list "${B}.ports=wan"
+uci add_list "${B}.ports=wan"||return 1
+uci -q delete network.wan.device
+u network.wan.proto='none'||return 1
+if uci -q get network.wan6 >/dev/null 2>&1;then u network.wan6.disabled='1'||return 1;fi
+}
 zs(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="zone"{print $1}');do [ "$(uci -q get "$S.name")" = "$1" ]&&{ echo "$S";return;};done;return 1;}
 dz(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="zone"{print $1}');do [ "$(uci -q get "$S.name")" = "$1" ]&&uci -q delete "$S";done;for F in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$F.src")" = "$1" ]||[ "$(uci -q get "$F.dest")" = "$1" ]&&uci -q delete "$F";done;}
 df(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$S.src")" = "$1" ]||continue;case "$(uci -q get "$S.dest")" in vpn|tailscale);;*)uci -q delete "$S";;esac;done;}
@@ -75,7 +83,7 @@ ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
 psave(){ N="$1";D="$PROFILE_ROOT/$N";mkdir -p "$D";chmod 700 "$D";for F in $PROFILE_FILES;do [ -f "/etc/config/$F" ]&&cp "/etc/config/$F" "$D/$F";done;date +%s>"$D/saved_at";chmod 600 "$D"/* 2>/dev/null||true;}
-pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;echo "$M">/etc/mx4200/mode;ra;}
+pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;echo "$M">/etc/mx4200/mode;ra;}
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
 savecur(){ M="$(mode)";case "$M" in router|wds|repeater)psave "$M";;esac;}
 psum(){ N=$1;D=$PROFILE_ROOT/$N;pex $N||{ echo 'No profile';return;};echo "Profile: $N";I="$(uci -c "$D" -q get network.lan.ipaddr)";[ -n "$I" ]&&echo "LAN: $I";U="$(uci -c "$D" -q get wireless.mx_primary.ssid)";[ -n "$U" ]&&echo "Upstream: $U";}
@@ -235,11 +243,14 @@ u dhcp.lan.ignore='0'
 uci -q delete dhcp.mgmt
 fi
 uci -q delete network.usbwan
-u network.wan.proto='dhcp'
 if [ "$TARGET" = repeater ];then
+rwan || { echo 'Could not add WAN socket to LAN bridge'; exit 1; }
 for X in wwanp wwanb;do u network.$X='interface';u network.$X.proto='dhcp';done
 u network.wwanp.metric='5';u network.wwanb.metric='15';u network.wan.metric='20';uci -q delete network.wdsp;uci -q delete network.wdsb
 else
+u network.wan.device='wan'
+u network.wan.proto='dhcp'
+uci -q delete network.wan6.disabled
 for X in wdsp wdsb;do u network.$X='interface';u network.$X.proto='none';done
 uci -q delete network.wwanp;uci -q delete network.wwanb;u network.wan.metric='10'
 fi
@@ -641,6 +652,7 @@ echo 'mxstatus    Show mode, addresses, upstream route and LED status'
 echo 'mxrouter    Restore router mode or a saved router profile'
 echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
 echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
+echo '            Routed repeater makes the WAN socket a LAN port'
 echo 'mxusb       Set USB tether as primary, backup or off'
 echo 'mxled       Install or control the optional LED module'
 echo 'In mx: 4    Set backhaul to auto, 5 GHz primary or 2.4 GHz backup'
