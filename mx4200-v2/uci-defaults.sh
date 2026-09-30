@@ -415,7 +415,8 @@ chmod 755 /etc/init.d/mxd
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 MODULE_BASE_URL='https://github.com/geekymahar/linksys-openwrt-toolkit/raw/main/mx4200-v2/modules'
-LED_SHA256='83bf1e6becfad45ca3801125e1a4c8a0c979974188ade5c99a9890a067fdb47d'
+LED_MODULE_PATH='led/rev2'
+LED_SHA256='e6e1df51010c15e7e7d0347ad6c639ec9d9b267692668caa3fe5137ae6f0b38b'
 LED_STATE='/etc/mx4200/modules/led.installed'
 ready(){ [ -x /usr/bin/mxls ] && [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ] && [ "$(cat "$LED_STATE" 2>/dev/null)" = "$LED_SHA256" ]; }
 fetch(){
@@ -429,9 +430,9 @@ ready && return 0
 command -v sha256sum >/dev/null 2>&1 || return 1
 mkdir -p /etc/mx4200/modules || return 1
 TMP="/tmp/mx-led-install.$$"; SUM="$TMP.sha256"
-fetch "$MODULE_BASE_URL/led/install.sh.sha256" "$SUM" || { rm -f "$TMP" "$SUM"; return 1; }
+fetch "$MODULE_BASE_URL/$LED_MODULE_PATH/install.sh.sha256" "$SUM" || { rm -f "$TMP" "$SUM"; return 1; }
 HASH="$(awk 'NR==1{print $1}' "$SUM")"
-[ "$HASH" = "$LED_SHA256" ] && fetch "$MODULE_BASE_URL/led/install.sh" "$TMP" && [ "$(sha256sum "$TMP" | awk '{print $1}')" = "$LED_SHA256" ] && sh "$TMP"
+[ "$HASH" = "$LED_SHA256" ] && fetch "$MODULE_BASE_URL/$LED_MODULE_PATH/install.sh" "$TMP" && [ "$(sha256sum "$TMP" | awk '{print $1}')" = "$LED_SHA256" ] && sh "$TMP"
 RESULT=$?
 rm -f "$TMP" "$SUM"
 [ "$RESULT" = 0 ] || return 1
