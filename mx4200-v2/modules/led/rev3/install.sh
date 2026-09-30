@@ -46,7 +46,6 @@ boot_ready(){ M="$(cat /etc/mx4200/mode 2>/dev/null || echo router)"; if [ "$M" 
 N=0
 while ! boot_ready && [ "$N" -lt 24 ]; do for C in red green blue yellow purple teal; do case "$C" in red) "$LED" rgb 180 0 0;; green) "$LED" rgb 0 180 0;; blue) "$LED" rgb 0 0 180;; yellow) "$LED" rgb 180 155 0;; purple) "$LED" rgb 180 0 180;; teal) "$LED" rgb 0 150 100;; esac; sleep .18; boot_ready && break; done; N=$((N+1)); done
 bytes(){ [ -r "/sys/class/net/$1/statistics/rx_bytes" ] || { echo 0; return; }; A="$(cat "/sys/class/net/$1/statistics/rx_bytes")"; Z="$(cat "/sys/class/net/$1/statistics/tx_bytes")"; echo $((${A:-0}+${Z:-0})); }
-defif(){ ip -4 route get "$LED_TEST_IP1" 2>/dev/null | awk '{for(i=1;i<=NF;i++)if($i=="dev"){print $(i+1);exit}}'; }
 wgifs(){ command -v wg >/dev/null 2>&1 && wg show interfaces 2>/dev/null; }
 wgup(){ for I in $(wgifs); do wg show "$I" latest-handshakes 2>/dev/null | awk '$2>0{x=1}END{exit !x}' && return 0; done; return 1; }
 wgbytes(){ X=0; for I in $(wgifs); do V="$(bytes "$I")"; X=$((X+V)); done; echo "$X"; }
@@ -54,6 +53,8 @@ ovpnifs(){ for P in /sys/class/net/tun* /sys/class/net/tap*; do [ -e "$P" ] && b
 ovpnup(){ pidof openvpn >/dev/null 2>&1 && [ -n "$(ovpnifs)" ]; }
 ovpnbytes(){ X=0; for I in $(ovpnifs); do V="$(bytes "$I")"; X=$((X+V)); done; echo "$X"; }
 wdssta(){ for I in $(iw dev 2>/dev/null|awk '/Interface/{i=$2}/type managed/{print i}');do [ -e "/sys/class/net/br-lan/brif/$I" ]&&iw dev "$I" link 2>/dev/null|grep -q '^Connected to '&&{ echo "$I";return;};done;}
+staif(){ S="$1"; R="$(uci -q get wireless.$S.device)"; [ -n "$R" ] || return; J="$(ubus call network.wireless status 2>/dev/null)"; for N in 0 1 2 3; do [ "$(printf '%s\n' "$J" | jsonfilter -e "@.$R.interfaces[$N].section" 2>/dev/null)" = "$S" ] && { printf '%s\n' "$J" | jsonfilter -e "@.$R.interfaces[$N].ifname" 2>/dev/null; return; }; done; }
+staup(){ I="$(staif "$1")"; [ -n "$I" ] && iw dev "$I" link 2>/dev/null | grep -q '^Connected to '; }
 route_dev(){ ip -4 route show default 2>/dev/null | awk '$1=="default"{d="";m=0;for(i=1;i<=NF;i++){if($i=="dev")d=$(i+1);if($i=="metric")m=$(i+1)+0}if(d==""||d~/^(tun|tap|wg|tailscale)/)next;if(!found||m<best){found=1;best=m;chosen=d}}END{print chosen}'; }
 iface_dev(){ ubus call "network.interface.$1" status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null; }
 uplink_kind(){
@@ -67,7 +68,7 @@ fi
 BACKUP_DEV="$(iface_dev wwanb)"
 [ -n "$BACKUP_DEV" ] && [ "$DEV" = "$BACKUP_DEV" ] && echo backup || echo primary
 }
-wds_health(){ case "$1" in GREEN) STATE=online;; RED) STATE=no_wan;; YELLOW) STATE=dns_fail;; *) STATE=no_internet;; esac; }
+wds_health(){ case "$1" in GREEN) STATE=online;; RED) STATE=link_down;; YELLOW) STATE=dns_fail;; *) STATE=no_internet;; esac; }
 dfs_wait(){
 J="$(ubus call network.wireless status 2>/dev/null)" || return 1
 for AP in $(printf '%s\n' "$J" | jsonfilter -e '@.radio2.interfaces[*].ifname' 2>/dev/null); do
@@ -88,9 +89,9 @@ STATE=online; IF=''
 if [ "$M" = wds ] && { [ "$ROUTE_DEV" = br-lan ] || [ -z "$ROUTE_DEV" ]; }; then
 IF="$(wdssta)"
 if [ -z "$IF" ]; then
-STATE=no_wan; LAST_WDS_IF=''; WH=ORANGE; WC=30
+STATE=link_down; LAST_WDS_IF=''; WH=ORANGE; WC=30
 elif ! iw dev "$IF" info 2>/dev/null | grep -q '4addr: on' || [ ! -e "/sys/class/net/br-lan/brif/$IF" ]; then
-STATE=no_internet; LAST_WDS_IF=''; WH=ORANGE; WC=30
+STATE=link_down; LAST_WDS_IF=''; WH=ORANGE; WC=30
 else
 [ "$IF" = "$LAST_WDS_IF" ] || { LAST_WDS_IF="$IF"; WC=30; }
 WC=$((WC+1))
@@ -99,10 +100,18 @@ wds_health "$WH"
 fi
 else
 LAST_WDS_IF=''
-IF="$(defif)"
-if [ -z "$IF" ]; then STATE=no_wan
-elif ! ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP1" >/dev/null 2>&1 && ! ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP2" >/dev/null 2>&1; then STATE=no_internet
-elif ! nslookup "$DNS_TEST_NAME" 127.0.0.1 >/dev/null 2>&1; then STATE=dns_fail
+IF="$ROUTE_DEV"
+if [ -z "$IF" ]; then
+STATE=no_wan
+[ "$M" = repeater ] && ! staup mx_primary && ! staup mx_backup && STATE=link_down
+elif [ "$M" = repeater ] && iw dev "$IF" info 2>/dev/null | grep -q 'type managed' && ! iw dev "$IF" link 2>/dev/null | grep -q '^Connected to '; then
+STATE=link_down
+else
+DNS_OK=0; nslookup "$DNS_TEST_NAME" 127.0.0.1 >/dev/null 2>&1 && DNS_OK=1
+if ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP1" >/dev/null 2>&1 || ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP2" >/dev/null 2>&1; then
+[ "$DNS_OK" = 1 ] || STATE=dns_fail
+elif [ "$DNS_OK" = 0 ]; then STATE=no_internet
+fi
 fi
 fi
 dfs_wait && STATE=dfs_wait
@@ -131,8 +140,9 @@ while true; do
 load
 case "$STATE" in
 dfs_wait) dfs_blink ;;
+link_down) beat red link_down; load; [ "$STATE" = link_down ] && beat blue link_down ;;
 no_wan) beat red no_wan ;;
-no_internet) beat red no_internet; load; [ "$STATE" = no_internet ] && beat blue no_internet ;;
+no_internet) beat red no_internet ;;
 dns_fail) breathe yellow dns_fail ;;
 online)
 breathe green online

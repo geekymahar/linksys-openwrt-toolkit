@@ -486,7 +486,7 @@ cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 MODULE_BASE_URL='https://github.com/geekymahar/linksys-openwrt-toolkit/raw/main/mx4200-v2/modules'
 LED_MODULE_PATH='led/rev3'
-LED_SHA256='ee68e8a8c15b7f4e171af433e5a4b2770b007a750b1e6c3d7e3a99db30b27470'
+LED_SHA256='a8ad0f7a7caf65320002f9b39f70c1a3472e6dc86d94445cd6cf10bf1743c510'
 LED_STATE='/etc/mx4200/modules/led.installed'
 ready(){ [ -x /usr/bin/mxls ] && [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ] && [ "$(cat "$LED_STATE" 2>/dev/null)" = "$LED_SHA256" ]; }
 fetch(){
