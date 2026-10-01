@@ -1,0 +1,205 @@
+# Linksys MX4200 V2 / P2 firmware configuration
+
+This directory defines the MX4200 V2/P2 OpenWrt firmware setup. The two configuration inputs are [`uci-defaults.sh`](uci-defaults.sh) and [`packages.txt`](packages.txt). This document describes what the current files actually configure; the shell files are the source of truth if behavior changes.
+
+The firmware builder runs `uci-defaults.sh` on the router's first boot. It writes local scripts, configures OpenWrt through UCI, saves an initial router profile, and starts the local services. The core networking functions do not fetch code from the Internet. Two optional installers are downloaded from this repository when connectivity becomes available: automatic switching **between** saved modes and the advanced LED controller. Once installed, their runtime scripts are local and do not need GitHub on later boots.
+
+## Repository and installed files
+
+| Repository path | Role |
+| --- | --- |
+| `uci-defaults.sh` | First-boot configuration and all generated core scripts. Firmware selector limit: **40,960 bytes**. |
+| `packages.txt` | Space-separated firmware package selection. |
+| `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer. |
+| `modules/led/rev3/install.sh` and `.sha256` | **Selected** advanced LED installer. |
+| `modules/led/rev2/` | Earlier LED revision; present but not selected by the bootstrap. |
+| `modules/led/` | Earlier root-level LED installer; present but not selected. |
+
+The first-boot script creates these notable router paths:
+
+| Router path | Purpose |
+| --- | --- |
+| `/etc/mx4200/base.conf` | Defaults shared by the generated scripts. |
+| `/etc/mx4200/mode` | Current mode: `router`, `repeater`, `wds`, or `ap`. |
+| `/etc/mx4200/profiles/<mode>/` | Saved copies of the `network`, `wireless`, `dhcp`, `firewall`, and `system` UCI files. |
+| `/usr/lib/mxc` | Common functions for UCI edits, profiles, radio setup, scanning, and security detection. |
+| `/usr/sbin/mxm`, `/usr/bin/mx` | Interactive manager, status, and help. |
+| `/root/mxr`, `/root/mxa` | Repeater/WDS and wired-AP setup dialogs. |
+| `/usr/sbin/mxb`, `/etc/init.d/mxb` | Local backhaul monitor and 5 GHz/2.4 GHz selection. |
+| `/usr/sbin/mxu` | USB-tether detection and configuration. |
+| `/usr/sbin/mxw`, `/root/mxwds` | WDS health check and diagnostic output. |
+| `/usr/sbin/mxd`, `/etc/init.d/mxd` | DNS fallback, Tailscale settings, and management-subnet overlap check. |
+| `/etc/hotplug.d/iface/95-mxmgmt` | Rechecks the management address when upstream LAN DHCP comes up or changes. |
+| `/usr/sbin/mxmod`, `/etc/init.d/mxmod` | Optional-module download, verification, installation, and retry. |
+| `/etc/profile.d/mx` | SSH aliases and short login guide. |
+
+The selected LED installer adds `/etc/mx4200/led.conf`, `/usr/bin/mxls`, `/usr/bin/mxld`, and `/etc/init.d/mxl`. The automatic-mode installer adds `/usr/sbin/mxauto` and `/etc/init.d/mxauto`. Generated files are listed in `/etc/sysupgrade.conf`; each optional installer adds its own files there after installation.
+
+## Default settings and radio mapping
+
+| Setting | Current value |
+| --- | --- |
+| Device scope | Linksys MX4200 V2/P2 |
+| Country | `GB` |
+| Hostname | `OpenWrt-LS-MX4200v2` |
+| Router/routed-repeater LAN | `192.168.40.1/24` |
+| LAN DHCP pool | Start `100`, limit `150`, lease `12h` (normally `.100`–`.249`) |
+| Preferred isolated management IP | `172.23.247.1/24` |
+| Management DHCP pool | Start `100`, limit `100` (normally `.100`–`.199`) |
+| DNS fallback servers | `1.1.1.1`, `1.0.0.1` |
+| DNS test name | `openwrt.org` |
+
+The script maps **`radio1` to 2.4 GHz**, **`radio0` to 5 GHz 2×2**, and **`radio2` to 5 GHz 4×4**. It enables all three radios with `HE40` on 2.4 GHz and `HE80` on each 5 GHz radio. In repeater modes, `radio2` is the primary upstream backhaul; `radio1` can be its 2.4 GHz backup. `radio0` supplies a separate 5 GHz client AP.
+
+On first boot in router mode, the script creates three **open**, passwordless APs: `LS-MX4200v2` on `radio1`, `LS-MX4200v2-5GHz` on `radio0`, and `LS-MX4200v2-Max` on `radio2`. It does not set a root password. The guided repeater and wired-AP setup dialogs instead ask for Wi-Fi passwords and configure their client-facing APs as WPA2/WPA3 mixed (`sae-mixed`).
+
+## Operating modes
+
+| Mode | Upstream and addressing | Ethernet ports | DHCP served by MX4200 | Client Wi-Fi |
+| --- | --- | --- | --- | --- |
+| **Router** (`router`) | Physical `wan` gets IPv4 by DHCP. `br-lan` is `192.168.40.1/24`; normal routed/NAT firewall setup. | `lan1`–`lan3` are `br-lan`; `wan` is separate. | On `br-lan`. | Three initially open SSIDs, one per radio. |
+| **Routed repeater** (`repeater`) | `radio2` STA uses DHCP on `wwanp`; optional `radio1` STA uses DHCP on `wwanb`. Client LAN stays on the saved router LAN subnet. Optional wired `wan` also uses DHCP. | `lan1`–`lan3` are LAN. During setup, the user chooses whether the physical `wan` socket joins LAN or remains a wired WAN uplink. | On `br-lan`. | `${upstream SSID}-RPT-5G` on `radio0` and `${upstream SSID}-RPT-2G` on `radio1`, with the setup password. |
+| **True WDS repeater** (`wds`) | Upstream 4-address Wi-Fi is bridged into `br-lan`; `br-lan` gets DHCP from upstream. Separate `wan` DHCP is configured at a lower route priority. | `lan2`–`lan3` join the upstream bridge. `lan1` belongs to isolated `br-mgmt`; `wan` stays a separate WAN interface. | **Off** on `br-lan`; **on** for `br-mgmt`. | Repeater SSIDs on `radio0`/`radio1`, plus a password-protected `${upstream SSID}-Management` AP on `radio1`. |
+| **Wired AP** (`ap`) | Any Ethernet socket can connect to the upstream LAN. All four sockets and client Wi-Fi are bridged; `br-lan` gets DHCP from the upstream router. | `lan1`–`lan3` **and physical `wan`** join `br-lan`. | **Off** on `br-lan`; **on** for separate `br-mgmt`. | Chosen client SSID on all three radios, plus password-protected `${SSID}-Management` on `radio1`. |
+
+WDS requires the **upstream AP to support compatible 4-address/WDS bridging**. If it does not, use routed repeater mode. In AP and WDS modes, the upstream router supplies the ordinary client-network addressing; the MX4200 does not assume an upstream gateway or subnet. In AP mode, the Management SSID is a separate local subnet and its firewall zone does not forward to the upstream network. In WDS mode, the management zone has an explicit forwarding path to the `wan` zone, which includes the upstream bridge.
+
+Routed repeater setup asks two extra questions. Choosing **WAN as LAN** bridges the physical socket into `br-lan` and disables its routed WAN protocol. Choosing **wired WAN** leaves it separate and then asks whether wired WAN or Wi-Fi has priority. The configured IPv4 route metrics are:
+
+| Routed-repeater uplink | Metric |
+| --- | ---: |
+| 5 GHz `wwanp` | 5 |
+| 2.4 GHz `wwanb` | 15 |
+| Wired WAN, when preferred | 3 |
+| Wired WAN, when Wi-Fi is preferred | 20 |
+
+Lower metrics are preferred. The metrics choose among available routes; they are **not a continuous Internet-health check** for routed repeater mode. An associated 5 GHz STA with a broken upstream Internet path may retain the preferred route until netifd withdraws it or another mode is selected.
+
+### Management address and overlap avoidance
+
+`br-mgmt` has a separate `/24` address in AP and WDS modes. Its preferred address is `172.23.247.1`; if that subnet overlaps an active route, the local checker tries `172.29.251.1`, `10.253.247.1`, then `192.168.247.1`. The checker examines IPv4 routes other than `br-mgmt` and also the current `br-lan` IPv4 lease, so it can detect broader upstream prefixes and an overlap even if a connected route was not installed. It runs on LAN `ifup`/`ifupdate` and once per minute in `mxd`.
+
+When the selected address changes, the script updates UCI, restarts `mgmt`, restarts dnsmasq, and logs the selected IP under `mxmgmt`. It returns to `172.23.247.1` when that address is safe again. `mxstatus` shows the current address. A connected management client may need to reconnect its Wi-Fi or renew DHCP after a change. With no upstream IPv4 lease, the checker leaves the current management address alone. If **all four candidates overlap**, it logs a warning and keeps the current address; no fixed list can guarantee a conflict-free choice for every possible upstream/VPN layout.
+
+This checker changes **management addressing only**. Router and routed-repeater LAN still default to `192.168.40.0/24`; a routed repeater can have a separate LAN/upstream overlap if its upstream also uses that subnet.
+
+## Repeater setup and backhaul behavior
+
+Run `mxrepeater` (or choose Repeater in `mx`) and select WDS or routed mode. The scanner tries four passes on the selected radio. It uses `iwinfo`, falls back to the active radio interface, and can temporarily create a managed scan interface if necessary. It filters BSSIDs belonging to the MX4200 itself, groups scan results by SSID, and presents channel, signal, and advertised encryption. For `radio2` it waits for a pending radio/DFS state before scanning, up to the configured wait. A 2.4 GHz backup can be chosen separately or can reuse the 5 GHz SSID/password after a matching 2.4 GHz scan.
+
+The scan text is mapped to OpenWrt encryption names (`none`, `owe`, `sae`, `sae-mixed`, `psk2`, or legacy `psk`). For ambiguous WPA/WPA2 PSK scan results, setup explicitly asks whether to use WPA2-PSK (default) or legacy WPA-PSK. Upstream addressing always comes from DHCP; the scan records the selected BSSID and channel rather than assuming a gateway IP.
+
+`mxb` runs locally once a second in repeater/WDS modes. About every 30 seconds, it can rescan a disconnected configured STA and update its BSSID/channel if the same SSID appears elsewhere. This provides dynamic upstream BSSID rediscovery without connecting to one of the router's own BSSIDs. Manual `mx` Backhaul choices can enable auto, primary only, or backup only.
+
+In **WDS**, `mxb` keeps only the selected STA enslaved to `br-lan`. If the primary association disappears and the backup is associated, it switches to backup and requests DHCP renewal. When the primary association stays present for about 30 seconds, it switches back. In **routed repeater**, both configured DHCP STA interfaces can exist and netifd uses the route metrics above; `mxb` mainly monitors association and performs BSSID rediscovery. A configured 2.4 GHz path can carry traffic while `radio2` is waiting on DFS, but this depends on the backup being associated and having a working route. The initial interactive 5 GHz scan itself waits for the radio before the backup-selection prompt.
+
+`mxw` supplies the WDS diagnostic result: `RED` if there is no connected upstream STA, `ORANGE` if 4-address bridging, DHCP/default route, or Internet ping fails, `YELLOW` if the upstream DNS check fails, and `GREEN` if all checks pass. `mxwds` prints the upstream bridge address, route, DNS, and that health result.
+
+## Saved profiles and automatic mode switching
+
+Each new setup saves the current mode's five UCI configuration files. First boot also creates `router` and `router-baseline`. The manager can restore the previous saved profile or the first-boot router baseline. Reloading a saved AP/WDS profile resets its management address to the preferred value; the overlap checker can then select a fallback for the current upstream. A profile reload replaces the whole saved UCI files, so manual changes made after its last save are not guaranteed to survive a later restore. These snapshots include Wi-Fi keys; the script gives the profile directories `0700` and saved files `0600` permissions.
+
+When saving a mode, the dialog asks for an **auto priority** from `1` (highest) to `9`; `0` disables that mode in automatic switching. Priorities are stored in `/etc/mx4200/auto-priority`. The `mxauto` service is supplied by `modules/auto`, so it becomes available only after that optional installer has been fetched once. Manual profile restore and the within-mode backhaul behavior remain local without it.
+
+Once installed, `mxauto` polls every 10 seconds. It works only when at least two saved, enabled modes exist and the current mode has a priority. With a healthy current route, it checks for a higher-priority mode no more often than every 300 seconds. After three failed health checks, it tries other enabled profiles in priority order. It tests the selected non-VPN default-route device with pings to `1.1.1.1` or `8.8.8.8`; AP/WDS additionally require a DHCP address and default route on `br-lan`. Before trying router mode it requires WAN carrier; before trying AP it requires carrier on any Ethernet port. WDS and routed repeater are treated as possible without a carrier precheck.
+
+A trial reloads the candidate profile, waits 12 seconds, and makes up to three health checks separated by 5 seconds. A failed candidate receives a 15-minute cooldown and the previous profile is restored. Manual mode/priority actions pause automatic changes for 10 minutes. Trials can interrupt clients, and ping reachability is a proxy for connectivity rather than proof that every application works. Use `mxauto status` to view the ordered saved modes, or `mxauto once` to run a single decision step.
+
+## USB tethering
+
+`mxusb` scans `/sys/class/net` for a network interface whose device path contains `/usb`; the firmware includes several common USB Ethernet, NCM, RNDIS, and iPhone tether drivers. Choosing **Primary** or **Backup** creates a DHCP `usbwan` interface, adds it to the WAN firewall zone, and restarts network/firewall. Primary uses metric `3` and moves wired WAN to `20` and, where present, the 5 GHz repeater path to `10`; backup uses metric `30`. Turning USB off removes `usbwan` and restores the mode's ordinary route metrics.
+
+The last selected USB role is saved in `/etc/mx4200/usb.conf`, and **Previous** in the menu reapplies it. The current code does **not** automatically reapply that role at every boot or when a phone is newly plugged in. Switching to a new repeater/WDS setup turns an active USB configuration off before changing modes. In AP or WDS bridge modes, a USB route for the MX4200 itself does not automatically move bridged client traffic onto USB.
+
+## DNS, firewall, and VPN preparation
+
+`mxd` checks once a minute. When it can ping `1.1.1.1`, it probes nameservers learned from upstream using `dig` for `openwrt.org`. If those fail, it points dnsmasq at `1.1.1.1` and `1.0.0.1` when no explicit dnsmasq server is configured or when it already owns the fallback. When learned DNS works again, it removes the fallback it owns. It does not rewrite an upstream subnet or gateway. The check depends on public-IP reachability, so restrictive or captive upstream networks can affect its diagnosis. Changing dnsmasq's server list while this fallback is active needs care because the recovery path clears that list.
+
+The router/routed-repeater firewall configures LAN-to-WAN forwarding and masquerading. Routed Wi-Fi DHCP interfaces get a separate masquerading `uplink` zone. The management network has its own zone. The script adds WAN/uplink rules for router management ports `22`, `80`, and `443` with source addresses restricted to `10/8`, `172.16/12`, `192.168/16`, or `100.64/10`. These are firewall-source filters; they are not upstream gateway defaults. Other existing firewall rules, if present, must be reviewed separately.
+
+The image includes Tailscale, WireGuard, and OpenVPN tools and LuCI apps. First boot creates VPN/Tailscale firewall zones, enables IPv4/IPv6 forwarding, opens WAN TCP/UDP ports `1194`, `51820`, and `41641`, sets Tailscale's firewall mode to `nftables`, and starts Tailscale/OpenVPN init services when present. Once Tailscale reports `Running`, `mxd` tries to advertise this router as an exit node and accept routes, once per boot. The script does **not** create a Tailscale login, WireGuard peer/key, or OpenVPN client/server configuration; those still need their normal setup.
+
+## Optional module bootstrap
+
+`mxmod` uses `uclient-fetch` first and `curl` as a fallback; **Git is not installed or used**. It downloads each installer's `.sha256` file and `install.sh` from `MODULE_BASE_URL`, checks the published hash against a digest embedded in `uci-defaults.sh`, then checks the installer bytes before executing them. The board-name check inside each installer limits installation to MX4200 V2/P2. Install success is recorded in `/etc/mx4200/modules/`.
+
+The current base URL is pinned to commit `09c3a2ac1383caa641d2d4c7ba9fe5a037192b60` under `mx4200-v2/modules/` in `geekymahar/linksys-openwrt-toolkit`:
+
+```text
+https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/09c3a2ac1383caa641d2d4c7ba9fe5a037192b60/mx4200-v2/modules
+```
+
+The selected installers are `auto/install.sh` (expected SHA-256 `f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de`) and `led/rev3/install.sh` (expected SHA-256 `651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44`). Because the URL and digests are pinned, changing a file on GitHub's default branch alone **will not** update a flashed router. A future firmware change must deliberately update the pinned commit and digests.
+
+With `LED_AUTO_INSTALL='1'`, the `mxmod` init service retries any missing LED and automatic-mode installers every 30 seconds until they are installed. The automatic-mode installer is attempted regardless of that LED setting. If Internet is unavailable, core routing, DHCP, Wi-Fi, firewall, USB, the `mx` menu, and manual saved-profile selection remain available. The LED and cross-mode auto services start after their installers have been fetched; subsequent boots use their installed local files. `mxled` also offers an immediate manual install attempt without requiring you to run a download command.
+
+## Advanced LED behavior (selected revision 3)
+
+`modules/led/rev3/install.sh` installs `mxls`, the low-level color setter, and `mxld`, the state sampler/animator. `mxls` tries RGB LED sysfs entries and can use an ST1202 controller over I²C when detected. `mxls detect` reports what it found. The LED module does not control routing; a hardware probe failure does not stop networking. The root-level and `rev2` installers are older alternatives in the repository and are **not** selected by the current bootstrap.
+
+The installed `/etc/mx4200/led.conf` sets `LED_INTERVAL='1'`: the network/traffic sampler normally updates every **one second**. The LED animation itself has shorter timing steps. Traffic level uses total bytes transferred on the chosen uplink per sample: under `4096` bytes is idle, under `32768` light, under `262144` medium, and higher traffic is the fastest animation level.
+
+The repository's LED installers represent successive behavior, not three modules that run together:
+
+| Installer | Current role and distinguishing behavior |
+| --- | --- |
+| `modules/led/install.sh` | Earlier implementation. Uses the basic online/DNS/no-uplink indications and VPN traffic overlays; no DFS indication or backup/USB cue. |
+| `modules/led/rev2/install.sh` | Adds route-aware uplink selection and teal backup/white USB cues. It does not implement the revision-3 `link_down` or DFS states. |
+| `modules/led/rev3/install.sh` | Selected by `mxmod`. Adds AP management boot readiness, separates broken backhaul from Internet loss, and adds purple DFS wait. |
+
+| Revision-3 indication | Meaning in the current code |
+| --- | --- |
+| Boot color sequence, then dim green | Waiting briefly for the local management/LAN address, dnsmasq, and web service; then normal LED control starts. |
+| Breathing green | Uplink classified as online. Breathing speed rises with measured uplink traffic. |
+| Alternating red beat, blue beat | `link_down`: repeater backhaul association/4-address bridge is broken. This is for a broken link, not merely failed Internet. |
+| Red beat only | `no_wan` (no usable default-route device) **or** `no_internet` (connectivity checks failed). The state file distinguishes them. |
+| Breathing yellow | `dns_fail`: IP connectivity works but DNS test fails. |
+| Purple double blink | `dfs_wait`: radio2's AP interface reports a DFS wait. This indication takes precedence even if backup Internet is working. |
+| Brief teal cue after the green cycle | Current routed uplink/backhaul is classified as the 2.4 GHz backup. |
+| Brief white cue after the green cycle | USB tether is the selected uplink. |
+| Breathing blue after green | Tailscale interface carried traffic during the sample. |
+| Breathing purple after green | A WireGuard interface with a recorded handshake carried traffic. Its breathing pattern differs from the DFS double blink. |
+| Breathing orange after green | OpenVPN has a process/tun-or-tap interface and carried traffic. |
+
+The online sequence can show several overlays in order: green, optional teal/white uplink cue, then blue (Tailscale), purple (WireGuard), and orange (OpenVPN) when each was active. The state file `/tmp/mx4200-led-state` records `STATE`, traffic `LEVEL`, VPN activity flags, and selected `UPLINK`. `mxstatus` prints that file when present. LED states use short pings and DNS lookups; blocked probe destinations, captive portals, or an upstream that answers DNS while both ping targets fail can produce a misleading color. The LED is a diagnostic indicator, not proof of application-level connectivity.
+
+The DFS indication specifically looks for `DFS` status on a **radio2 hostapd AP interface**. Router mode creates such an AP; repeater modes normally use radio2 as a STA, so a repeater's DFS wait may not produce this purple indication even while the backup link works.
+
+The LED menu can detect hardware, return to automatic control, show current state, or temporarily force red, green, blue, purple, orange, yellow, teal, white, or off. A forced color stops `mxl` until automatic control is restarted.
+
+For direct hardware diagnosis after installation, `/usr/bin/mxls detect` reports the sysfs/I²C backend. `/usr/bin/mxls rgb R G B` accepts three 0–255 channel values; named commands include `red`, `green`, `blue`, `purple`, `orange`, `yellow`, `teal`, `white`, dim variants, and `off`. Direct `mxls` commands set the LED immediately, while the running `mxl` service may overwrite that color on its next animation step.
+
+## Packages and offline dependencies
+
+`packages.txt` preinstalls network, Wi-Fi, firewall, USB, VPN, management, and LED hardware support in the firmware. Relevant examples are `wpad-mbedtls` for the full WPA/WPA3/STA/WDS feature set; `ip-full`, `netifd`, `dnsmasq`, `firewall4`, `iw`, `iwinfo`, and `jsonfilter` for the core; USB network drivers; `tailscale`, `wireguard-tools`, `openvpn-openssl`, and `bind-dig`; `uclient-fetch` and `curl` for verified optional installers; and I²C/LED drivers and `i2c-tools` for the advanced LED module. `wpad-basic-mbedtls` and Git are not selected.
+
+The package list also contains optional OpenWrt/LuCI tools such as SQM, DDNS, adblock, Samba, traffic statistics, mwan3, travelmate, and relayd. Their presence in the image **does not mean this script configures those services**. The LED dependencies can be present before the LED software is downloaded.
+
+## Linksys dual-image recovery and persistence
+
+If `fw_printenv`/`fw_setenv` are available and the existing boot environment exposes both `auto_recovery` and `maxpartialboots`, first boot sets `auto_recovery=yes` and `maxpartialboots=3`. This prepares the Linksys recovery behavior; it does not force a partition switch or prove that both images are healthy. `luci-app-advanced-reboot` is included in the package list.
+
+Profiles, module files, local helper scripts, and configuration paths are added to `/etc/sysupgrade.conf`. Whether an individual firmware upgrade preserves them also depends on the chosen sysupgrade settings. On a clean flash, the first-boot script recreates the initial router configuration and its baseline profile.
+
+## SSH command reference
+
+| Command | Action |
+| --- | --- |
+| `mx` | Interactive mode/setup menu. |
+| `mxhelp` | Short command guide. |
+| `mxstatus` | Current mode, route/gateway, addresses, WDS health, USB, and LED status. |
+| `mxrouter` | Restore previous router profile, first-boot baseline, or save current router profile. |
+| `mxrepeater` | Choose WDS or routed repeater and use a saved or new scan-based profile. |
+| `mxap` | Restore/configure wired AP or change the AP Management SSID password. |
+| `mxusb` | Detect USB tether, set primary/backup, use previous role, or turn it off. |
+| `mxled` | Install optional LED module now or control it after installation. |
+| `mxauto status` | Show enabled saved-mode priorities, if the optional auto module is installed. |
+| `/usr/sbin/mxb auto` (or `primary`, `backup`) | Set within-mode backhaul selection. The interactive menu exposes this too. |
+| `/root/mxwds` | Detailed WDS address/route/DNS/health check. |
+| `/usr/sbin/mxmod status` | Check LED module installation. `auto-status` checks saved-mode module installation. |
+
+The short names except `mx` are shell aliases loaded through `/etc/profile.d/mx` in an interactive SSH session. Their underlying paths, such as `/usr/sbin/mxm status`, work directly when aliases are not loaded.
+
+## Scope of validation
+
+This documentation is based on the current checked-in module sources and the local `uci-defaults.sh` working copy. Shell syntax, module hashes, package presence, and management-overlap logic have been checked locally. Actual WDS interoperability, DFS timing, WAN/USB failover, LED colors, and recovery behavior require tests on an MX4200 V2/P2 with the intended upstream equipment.

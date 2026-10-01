@@ -5,6 +5,7 @@ COUNTRY='GB'
 ROUTER_HOSTNAME='OpenWrt-LS-MX4200v2'
 LAN_IP='192.168.40.1'
 LAN_NETMASK='255.255.255.0'
+MGMT_IP='172.23.247.1'
 DHCP_START='100'
 DHCP_LIMIT='150'
 DHCP_LEASETIME='12h'
@@ -27,6 +28,7 @@ COUNTRY='$COUNTRY'
 ROUTER_HOSTNAME='$ROUTER_HOSTNAME'
 LAN_IP='$LAN_IP'
 LAN_NETMASK='$LAN_NETMASK'
+MGMT_IP='$MGMT_IP'
 DHCP_START='$DHCP_START'
 DHCP_LIMIT='$DHCP_LIMIT'
 DHCP_LEASETIME='$DHCP_LEASETIME'
@@ -52,14 +54,14 @@ B="$(ds br-lan)";[ -n "$B" ]||return 1
 uci -q del_list "${B}.ports=wan"
 uci add_list "${B}.ports=wan"||return 1
 uci -q delete network.wan.device
-u network.wan.proto='none'||return 1
-if uci -q get network.wan6 >/dev/null 2>&1;then u network.wan6.disabled='1'||return 1;fi
+u network.wan.proto=none||return 1
+if uci -q get network.wan6 >/dev/null 2>&1;then u network.wan6.disabled=1||return 1;fi
 }
 zs(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="zone"{print $1}');do [ "$(uci -q get "$S.name")" = "$1" ]&&{ echo "$S";return;};done;return 1;}
 dz(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="zone"{print $1}');do [ "$(uci -q get "$S.name")" = "$1" ]&&uci -q delete "$S";done;for F in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$F.src")" = "$1" ]||[ "$(uci -q get "$F.dest")" = "$1" ]&&uci -q delete "$F";done;}
 df(){ for S in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$S.src")" = "$1" ]||continue;case "$(uci -q get "$S.dest")" in vpn|tailscale);;*)uci -q delete "$S";;esac;done;}
-lz(){ Z="$(zs lan)";[ -n "$Z" ]||{ Z="firewall.$(uci add firewall zone)";u "${Z}.name=lan";};u "${Z}.input=ACCEPT";u "${Z}.output=ACCEPT";u "${Z}.forward=ACCEPT";uci -q del_list "${Z}.network=lan";uci add_list "${Z}.network=lan";}
-wz(){ Z="$(zs wan)";[ -n "$Z" ]||return 1;u "${Z}.masq=1";u "${Z}.mtu_fix=1";}
+lz(){ Z="$(zs lan)";[ -n "$Z" ]||{ Z="firewall.$(uci add firewall zone)";u ${Z}.name=lan;};u ${Z}.input=ACCEPT;u ${Z}.output=ACCEPT;u ${Z}.forward=ACCEPT;uci -q del_list "${Z}.network=lan";uci add_list "${Z}.network=lan";}
+wz(){ Z="$(zs wan)";[ -n "$Z" ]||return 1;u ${Z}.masq=1;u ${Z}.mtu_fix=1;}
 fw(){ for F in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$F.src")" = "$1" ]&&[ "$(uci -q get "$F.dest")" = "$2" ]&&return;done;F="$(uci add firewall forwarding)";u "firewall.$F.src=$1";u "firewall.$F.dest=$2";}
 l2w(){ df lan;fw lan wan;}
 ld(){
@@ -67,36 +69,35 @@ u network.lan=interface;u network.lan.device=br-lan;u network.lan.proto=dhcp;u n
 for O in ipaddr netmask gateway dns ip6assign ip6hint ip6class metric;do uci -q delete "network.lan.$O";done
 u dhcp.lan=dhcp;u dhcp.lan.interface=lan;u dhcp.lan.ignore=1;u dhcp.lan.ra=disabled;u dhcp.lan.dhcpv6=disabled;u dhcp.lan.ndp=disabled
 }
+sl(){
+u network.lan=interface;u network.lan.device=br-lan;u network.lan.proto=static;u network.lan.ipaddr="$1";u network.lan.netmask="$2";u network.lan.delegate=1
+for O in metric gateway dns;do uci -q delete "network.lan.$O";done
+u dhcp.lan=dhcp;u dhcp.lan.interface=lan;u dhcp.lan.start="$3";u dhcp.lan.limit="$4";u dhcp.lan.leasetime="$5";u dhcp.lan.ignore=0
+}
 mc(){
 uci -q delete network.br_mgmt;u network.br_mgmt=device;u network.br_mgmt.name=br-mgmt;u network.br_mgmt.type=bridge;u network.br_mgmt.bridge_empty=1
 [ "$4" = lan1 ]&&uci add_list network.br_mgmt.ports=lan1
 uci -q delete network.mgmt;u network.mgmt=interface;u network.mgmt.device=br-mgmt;u network.mgmt.proto=static;u network.mgmt.ipaddr="$1";u network.mgmt.netmask="$2";u network.mgmt.delegate=0
 uci -q delete dhcp.mgmt;u dhcp.mgmt=dhcp;u dhcp.mgmt.interface=mgmt;u dhcp.mgmt.start="$3";u dhcp.mgmt.limit=100;u dhcp.mgmt.leasetime="${5:-$DHCP_LEASETIME}";u dhcp.mgmt.ignore=0;u dhcp.mgmt.ra=disabled;u dhcp.mgmt.dhcpv6=disabled;u dhcp.mgmt.ndp=disabled
 }
-mf(){ dz mgmt;Z="$(uci add firewall zone)";u "firewall.$Z.name=mgmt";u "firewall.$Z.input=ACCEPT";u "firewall.$Z.output=ACCEPT";u "firewall.$Z.forward=REJECT";uci add_list "firewall.$Z.network=mgmt";}
-uz(){ dz uplink;Z="$(uci add firewall zone)";u "firewall.$Z.name=uplink";u "firewall.$Z.input=REJECT";u "firewall.$Z.output=ACCEPT";u "firewall.$Z.forward=REJECT";u "firewall.$Z.masq=1";u "firewall.$Z.mtu_fix=1";uci add_list "firewall.$Z.network=wwanp";uci -q get network.wwanb >/dev/null&&uci add_list "firewall.$Z.network=wwanb";for N in vpn tailscale;do [ -n "$(zs "$N")" ]&&fw "$N" uplink;done;}
+znew(){ Z="$(uci add firewall zone)";u "firewall.$Z.name=$1";u "firewall.$Z.input=$2";u firewall.$Z.output=ACCEPT;u "firewall.$Z.forward=$3";}
+mf(){ dz mgmt;znew mgmt ACCEPT REJECT;uci add_list "firewall.$Z.network=mgmt";}
+uz(){ dz uplink;znew uplink REJECT REJECT;u firewall.$Z.masq=1;u firewall.$Z.mtu_fix=1;uci add_list "firewall.$Z.network=wwanp";uci -q get network.wwanb >/dev/null&&uci add_list "firewall.$Z.network=wwanb";for N in vpn tailscale;do [ -n "$(zs "$N")" ]&&fw "$N" uplink;done;}
 pr(){ S=$1;for I in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10;do uci add_list "firewall.$S.src_ip=$I";done;}
 mr(){ S=mx_mgmt_$1;uci -q delete firewall.$S;u firewall.$S=rule;u firewall.$S.src="$1";pr $S;u firewall.$S.proto=tcp;u firewall.$S.dest_port='22 80 443';u firewall.$S.target=ACCEPT;}
-vz(){ N=$1;shift;dz "$N";Z="$(uci add firewall zone)";u "firewall.$Z.name=$N";u "firewall.$Z.input=ACCEPT";u "firewall.$Z.output=ACCEPT";u "firewall.$Z.forward=ACCEPT";u "firewall.$Z.masq=1";u "firewall.$Z.mtu_fix=1";for D in "$@";do uci add_list "firewall.$Z.device=$D";done;fw lan "$N";fw "$N" lan;fw "$N" wan;[ -n "$(zs uplink)" ]&&fw "$N" uplink;}
+vz(){ N=$1;shift;dz "$N";znew "$N" ACCEPT ACCEPT;u firewall.$Z.masq=1;u firewall.$Z.mtu_fix=1;for D in "$@";do uci add_list "firewall.$Z.device=$D";done;fw lan "$N";fw "$N" lan;fw "$N" wan;[ -n "$(zs uplink)" ]&&fw "$N" uplink;}
 rb() {
-u wireless.radio1.country="$COUNTRY"
-u wireless.radio1.band='2g'
-u wireless.radio1.htmode="$MODE_2G"
-u wireless.radio1.disabled='0'
-u wireless.radio0.country="$COUNTRY"
-u wireless.radio0.band='5g'
-u wireless.radio0.htmode="$MODE_5G"
-u wireless.radio0.disabled='0'
-u wireless.radio2.country="$COUNTRY"
-u wireless.radio2.band='5g'
-u wireless.radio2.htmode="$MODE_5G_HIGH"
-u wireless.radio2.disabled='0'
+for R in radio0 radio1 radio2;do u wireless.$R.country="$COUNTRY";u wireless.$R.disabled=0;done
+u wireless.radio1.band=2g;u wireless.radio1.htmode="$MODE_2G"
+u wireless.radio0.band=5g;u wireless.radio0.htmode="$MODE_5G"
+u wireless.radio2.band=5g;u wireless.radio2.htmode="$MODE_5G_HIGH"
 }
+ap(){ local S R N Q K;S=$1;R=$2;N=$3;Q=$4;K=$5;u wireless.$S=wifi-iface;u wireless.$S.device="$R";u wireless.$S.mode=ap;u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.encryption=sae-mixed;u wireless.$S.key="$K";u wireless.$S.disabled=0;}
 ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
 psave(){ N="$1";D="$PROFILE_ROOT/$N";mkdir -p "$D";chmod 700 "$D";for F in $PROFILE_FILES;do [ -f "/etc/config/$F" ]&&cp "/etc/config/$F" "$D/$F";done;date +%s>"$D/saved_at";chmod 600 "$D"/* 2>/dev/null||true;}
-pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;if [ "$M" = ap ]&&{ [ "$(uci -q get wireless.mx_mgmt.network)" != mgmt ]||[ "$(uci -q get network.mgmt.ipaddr)" != "$LAN_IP" ];};then mc "$LAN_IP" "$LAN_NETMASK" "$DHCP_START";u wireless.mx_mgmt.network=mgmt;u wireless.mx_mgmt.isolate=1;mf;ca;psave ap;fi;echo "$M">/etc/mx4200/mode;ra;}
+pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;if [ "$M" = ap ]&&{ [ "$(uci -q get wireless.mx_mgmt.network)" != mgmt ]||[ "$(uci -q get network.mgmt.ipaddr)" != "$MGMT_IP" ];};then mc "$MGMT_IP" "$LAN_NETMASK" "$DHCP_START";u wireless.mx_mgmt.network=mgmt;u wireless.mx_mgmt.isolate=1;mf;ca;psave ap;fi;if [ "$M" = wds ]&&[ "$(uci -q get network.mgmt.ipaddr)" != "$MGMT_IP" ];then u network.mgmt.ipaddr="$MGMT_IP";uci commit network;psave wds;fi;echo "$M">/etc/mx4200/mode;ra;}
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
 savecur(){ M="$(mode)";case "$M" in router|wds|repeater|ap)psave "$M";;esac;}
 priority(){
@@ -202,7 +203,7 @@ MGMT_PASS=''
 if [ "$TARGET" = wds ]; then
 echo
 echo "Mgmt AP: ${PSSID}-Management"
-echo "Mgmt IP: $R_LAN_IP"
+echo "Mgmt IP: $MGMT_IP"
 rs 'Management Wi-Fi password: '
 MGMT_PASS="$SECRET"
 [ -n "$MGMT_PASS" ] || { echo 'Management password required'; exit 1; }
@@ -211,52 +212,39 @@ wifi_clear
 u system.@system[0].hostname="$ROUTER_HOSTNAME"
 BR="$(ds br-lan)"
 [ -n "$BR" ] || { echo 'br-lan not found'; exit 1; }
-u "${BR}.stp=1"
+u ${BR}.stp=1
 uci -q delete "${BR}.ports"
 if [ "$TARGET" = wds ]; then
 uci add_list "${BR}.ports=lan2"
 uci add_list "${BR}.ports=lan3"
-ld;u network.lan.metric='5'
-mc "$R_LAN_IP" "$R_LAN_NETMASK" "$R_DHCP_START" lan1 "$R_DHCP_LEASE"
+ld;u network.lan.metric=5
+mc "$MGMT_IP" "$LAN_NETMASK" "$DHCP_START" lan1 "$R_DHCP_LEASE"
 else
 uci add_list "${BR}.ports=lan1"
 uci add_list "${BR}.ports=lan2"
 uci add_list "${BR}.ports=lan3"
-u network.lan='interface'
-u network.lan.device='br-lan'
-u network.lan.proto='static'
-uci -q delete network.lan.metric
-u network.lan.ipaddr="$R_LAN_IP"
-u network.lan.netmask="$R_LAN_NETMASK"
-u network.lan.delegate='1'
+sl "$R_LAN_IP" "$R_LAN_NETMASK" "$R_DHCP_START" "$R_DHCP_LIMIT" "$R_DHCP_LEASE"
 uci -q delete network.br_mgmt
 uci -q delete network.mgmt
-u dhcp.lan='dhcp'
-u dhcp.lan.interface='lan'
-u dhcp.lan.start="$R_DHCP_START"
-u dhcp.lan.limit="$R_DHCP_LIMIT"
-u dhcp.lan.leasetime="$R_DHCP_LEASE"
-u dhcp.lan.ignore='0'
 uci -q delete dhcp.mgmt
 fi
 uci -q delete network.usbwan
 if [ "$TARGET" = repeater ];then
-if [ "$WAN_PORT" = lan ];then rwan||{ echo 'Could not add WAN socket to LAN bridge';exit 1; };else u network.wan.device='wan';u network.wan.proto='dhcp';uci -q delete network.wan6.disabled;fi
+if [ "$WAN_PORT" = lan ];then rwan||{ echo 'Could not add WAN socket to LAN bridge';exit 1; };else u network.wan.device=wan;u network.wan.proto=dhcp;uci -q delete network.wan6.disabled;fi
 u network.wan.mx_priority="$WAN_PREF"
-for X in wwanp wwanb;do u network.$X='interface';u network.$X.proto='dhcp';done
-u network.wwanp.metric='5';u network.wwanb.metric='15';[ "$WAN_PREF" = wan ]&&u network.wan.metric='3'||u network.wan.metric='20';uci -q delete network.wdsp;uci -q delete network.wdsb
+for X in wwanp wwanb;do u network.$X=interface;u network.$X.proto=dhcp;done
+u network.wwanp.metric=5;u network.wwanb.metric=15;[ "$WAN_PREF" = wan ]&&u network.wan.metric=3||u network.wan.metric=20;uci -q delete network.wdsp;uci -q delete network.wdsb
 else
-u network.wan.device='wan'
-u network.wan.proto='dhcp'
+u network.wan.device=wan
+u network.wan.proto=dhcp
 uci -q delete network.wan.mx_priority
 uci -q delete network.wan6.disabled
-for X in wdsp wdsb;do u network.$X='interface';u network.$X.proto='none';done
-uci -q delete network.wwanp;uci -q delete network.wwanb;u network.wan.metric='10'
+for X in wdsp wdsb;do u network.$X=interface;u network.$X.proto=none;done
+uci -q delete network.wwanp;uci -q delete network.wwanb;u network.wan.metric=10
 fi
-sta(){ S=$1;R=$2;N=$3;Q=$4;A=$5;E=$6;K=$7;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode='sta';u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.bssid="$A";u wireless.$S.encryption="$E";nk "$E"&&u wireless.$S.key="$K";[ "$TARGET" = wds ]&&u wireless.$S.wds=1;u wireless.$S.disabled=0;}
+sta(){ S=$1;R=$2;N=$3;Q=$4;A=$5;E=$6;K=$7;u wireless.$S=wifi-iface;u wireless.$S.device="$R";u wireless.$S.mode=sta;u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.bssid="$A";u wireless.$S.encryption="$E";nk "$E"&&u wireless.$S.key="$K";[ "$TARGET" = wds ]&&u wireless.$S.wds=1;u wireless.$S.disabled=0;}
 u "wireless.$PR.channel=$PCHAN";sta mx_primary "$PR" "$( [ "$TARGET" = wds ]&&echo wdsp||echo wwanp )" "$PSSID" "$PAP" "$PENC" "$PPASS"
 if [ "$BACKUP" = 1 ];then u "wireless.$BRAD.channel=$BCHAN";sta mx_backup "$BRAD" "$( [ "$TARGET" = wds ]&&echo wdsb||echo wwanb )" "$BSSID" "$BAP" "$BENC" "$BPASS";else uci -q delete wireless.mx_backup;uci -q delete network.wwanb;uci -q delete network.wdsb;fi
-ap(){ S=$1;R=$2;N=$3;Q=$4;K=$5;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode=ap;u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.encryption=sae-mixed;u wireless.$S.key="$K";u wireless.$S.disabled=0;}
 ap mx_ap5 radio0 lan "${PSSID}-RPT-5G" "$CLIENT_PASS";ap mx_ap2 radio1 lan "${PSSID}-RPT-2G" "$CLIENT_PASS"
 if [ "$TARGET" = wds ];then ap mx_mgmt radio1 mgmt "${PSSID}-Management" "$MGMT_PASS";else uci -q delete wireless.mx_mgmt;fi
 dz mgmt;dz uplink;lz;wz
@@ -283,7 +271,7 @@ echo
 echo
 echo 'WDS DHCP/DNS: upstream'
 echo "Mgmt Wi-Fi: ${PSSID}-Management"
-echo "Mgmt IP: $R_LAN_IP"
+echo "Mgmt IP: $(uci -q get network.mgmt.ipaddr)"
 }
 EOF
 chmod 755 /root/mxr
@@ -302,15 +290,14 @@ uci -q delete "${B}.ports";for I in lan1 lan2 lan3;do uci add_list "${B}.ports=$
 rwan||exit 1
 ld
 for I in wwanp wwanb wdsp wdsb usbwan;do uci -q delete "network.$I";done
-mc "$LAN_IP" "$LAN_NETMASK" "$DHCP_START"
-ap(){ S=$1;R=$2;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode='ap';u wireless.$S.network='lan';u wireless.$S.ssid="$Q";u wireless.$S.encryption='sae-mixed';u wireless.$S.key="$P";u wireless.$S.disabled='0';}
-ap mx_ap2 radio1;ap mx_ap5 radio0;ap mx_ap_high radio2
-u wireless.mx_mgmt='wifi-iface';u wireless.mx_mgmt.device='radio1';u wireless.mx_mgmt.mode='ap';u wireless.mx_mgmt.network='mgmt';u wireless.mx_mgmt.ssid="${Q}-Management";u wireless.mx_mgmt.encryption='sae-mixed';u wireless.mx_mgmt.key="$K";u wireless.mx_mgmt.isolate='1';u wireless.mx_mgmt.disabled='0'
+mc "$MGMT_IP" "$LAN_NETMASK" "$DHCP_START"
+ap mx_ap2 radio1 lan "$Q" "$P";ap mx_ap5 radio0 lan "$Q" "$P";ap mx_ap_high radio2 lan "$Q" "$P"
+ap mx_mgmt radio1 mgmt "${Q}-Management" "$K";u wireless.mx_mgmt.isolate=1
 dz uplink;lz;df lan;mf
 Z="$(zs wan)";[ -n "$Z" ]&&{ for I in lan wwanp wwanb usbwan;do uci -q del_list "${Z}.network=$I";done; }
 ca;echo ap >/etc/mx4200/mode;psave ap;priority ap;ra
 echo "Wired AP: all Ethernet ports are LAN; main router supplies DHCP."
-echo "Management SSID: ${Q}-Management | IP: $LAN_IP"
+echo "Management SSID: ${Q}-Management | IP: $(uci -q get network.mgmt.ipaddr)"
 EOF
 chmod 755 /root/mxa
 cat > /usr/sbin/mxb <<'EOF'
@@ -479,6 +466,25 @@ chmod 755 /root/mxwds
 cat > /usr/sbin/mxd <<'EOF'
 #!/bin/sh
 . /etc/mx4200/base.conf
+mgmt(){
+case "$(cat /etc/mx4200/mode 2>/dev/null)" in ap|wds);;*)return 0;;esac
+I="$(ip -4 -o addr show dev br-lan 2>/dev/null|awk '$3=="inet"{print $4}')";[ -n "$I" ]||return 0
+R="$(ip -4 route show table main 2>/dev/null;for X in $I;do echo "$X dev br-lan";done)"
+free_ip(){ printf '%s\n' "$R"|awk -v a="$1" '
+function n(s,v){split(s,v,".");return v[1]*16777216+v[2]*65536+v[3]*256+v[4]}
+BEGIN{x=n(a)}
+$1~/^[0-9]+\./&&$0!~/ dev br-mgmt( |$)/{
+split($1,p,"/");m=2^(32-(p[2]?p[2]:32));y=n(p[1]);
+if(int(x/m)==int(y/m)||int(x/256)==int(y/256))exit 1
+}';}
+P='';for A in "$MGMT_IP" 172.29.251.1 10.253.247.1 192.168.247.1;do free_ip "$A"&&{ P="$A";break;};done
+[ -n "$P" ]||{ logger -t mxmgmt 'No free management subnet; keeping current IP';return 1; }
+[ "$(uci -q get network.mgmt.ipaddr)" = "$P" ]&&return 0
+uci set network.mgmt.ipaddr="$P"&&uci commit network||return 1
+ifdown mgmt;ifup mgmt||return 1;/etc/init.d/dnsmasq restart||return 1
+logger -t mxmgmt "Management IP: $P"
+}
+[ "$1" = mgmt ]&&{ mgmt;exit $?; }
 STATE='/tmp/mx4200-dns-owned'
 while true; do
 if ping -c 1 -W 1 "$DNS_FALLBACK_1" >/dev/null 2>&1; then
@@ -498,6 +504,7 @@ uci commit dhcp; /etc/init.d/dnsmasq restart; touch "$STATE"
 fi
 fi
 if command -v tailscale >/dev/null 2>&1&&[ ! -f /tmp/mx-ts-init ]&&tailscale status --json 2>/dev/null|grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"';then tailscale set --advertise-exit-node --accept-routes=true >/dev/null 2>&1&&touch /tmp/mx-ts-init;fi
+mgmt
 sleep 60
 done
 EOF
@@ -511,6 +518,11 @@ start_service(){ procd_open_instance; procd_set_param command /usr/sbin/mxd; pro
 EOF
 chmod 755 /etc/init.d/mxd
 /etc/init.d/mxd enable
+mkdir -p /etc/hotplug.d/iface
+cat > /etc/hotplug.d/iface/95-mxmgmt <<'EOF'
+#!/bin/sh
+[ "$INTERFACE" = lan ]&&case "$ACTION" in ifup|ifupdate)/usr/sbin/mxd mgmt;;esac
+EOF
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 . /etc/mx4200/base.conf
@@ -641,7 +653,7 @@ echo "--- $I ---"; iw dev "$I" link 2>/dev/null; iw dev "$I" info 2>/dev/null | 
 done
 printf 'WDS health: '; /usr/sbin/mxw 2>/dev/null || true
 ip -4 addr show dev br-lan 2>/dev/null | awk '/inet /{print "WDS upstream IP: "$2;exit}'
-MIP="$(uci -q get network.mgmt.ipaddr 2>/dev/null)"; [ -n "$MIP" ] || MIP="$LAN_IP"
+MIP="$(uci -q get network.mgmt.ipaddr 2>/dev/null)"; [ -n "$MIP" ] || MIP="$MGMT_IP"
 echo "Mgmt IP: $MIP"
 else
 for N in wwanp wwanb;do ubus call network.interface.$N status 2>/dev/null|jsonfilter -e "$N IPv4: @.[\"ipv4-address\"][0].address" 2>/dev/null;done
@@ -667,7 +679,7 @@ case "$C" in
 1) /usr/bin/mxls detect;;
 2) /etc/init.d/mxl enable; /etc/init.d/mxl restart;;
 3) cat /tmp/mx4200-led-state 2>/dev/null || echo 'No LED state';;
-4|5|6|7|8|9|10|11|12) /etc/init.d/mxl stop; case "$C" in 4) X=red;;5) X=green;;6) X=blue;;7) X=purple;;8) X=orange;;9) X=yellow;;10) X=teal;;11) X=white;;12) X=off;;esac; /usr/bin/mxls "$X";;
+4|5|6|7|8|9|10|11|12) set -- red green blue purple orange yellow teal white off;shift $((C-4));/etc/init.d/mxl stop;/usr/bin/mxls "$1";;
 esac
 }
 menu(){
@@ -685,18 +697,17 @@ done
 case "$1" in
 router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; wdstest) /root/mxwds;;
 help|-h|--help)
-echo 'mx          Interactive setup menu (start here)'
-echo 'mxstatus    Show mode, addresses, upstream route and LED status'
-echo 'mxrouter    Restore router mode or a saved router profile'
-echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
-echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
-echo '            Routed repeater makes the WAN socket a LAN port'
-echo '            Or use WAN as a wired uplink; choose WAN/Wi-Fi priority'
-echo "mxap        Wired AP: upstream DHCP, isolated Management at $LAN_IP"
-echo 'Auto modes: assign 1-9 when saving a mode; 0 disables. mxauto status lists them.'
-echo 'mxusb       Set USB tether as primary, backup or off'
-echo 'mxled       Install or control the optional LED module'
-echo 'In mx: 4    Set backhaul to auto, 5 GHz primary or 2.4 GHz backup'
+echo 'mx          Interactive setup'
+echo 'mxstatus    Mode, IPs, upstream and LED'
+echo 'mxrouter    Restore router/saved profile'
+echo 'mxrepeater  WDS or routed; scans upstream Wi-Fi'
+echo '            2.4 GHz backup may reuse SSID/password'
+echo '            Routed: WAN socket can be LAN or uplink; set priority'
+echo "mxap        Wired AP; upstream DHCP; Management $MGMT_IP (auto fallback)"
+echo 'Auto modes: priority 1-9, 0=off; mxauto status'
+echo 'mxusb       USB tether: primary, backup or off'
+echo 'mxled       Optional LED installer/control'
+echo 'In mx: 4    5 GHz/2.4 GHz backhaul or auto'
 ;;
 '') menu;; *) menu;;
 esac
@@ -726,28 +737,14 @@ ln -sf mx /etc/profile.d/mx.sh
 wifi_clear
 rb
 u system.@system[0].hostname="$ROUTER_HOSTNAME"
-u network.lan='interface'
-u network.lan.device='br-lan'
-u network.lan.proto='static'
-uci -q delete network.lan.metric
-u network.lan.ipaddr="$LAN_IP"
-u network.lan.netmask="$LAN_NETMASK"
-u network.lan.delegate='1'
-uci -q delete network.lan.gateway
-uci -q delete network.lan.dns
+sl "$LAN_IP" "$LAN_NETMASK" "$DHCP_START" "$DHCP_LIMIT" "$DHCP_LEASETIME"
 BR="$(ds br-lan)"
-[ -n "$BR" ] && { u "${BR}.stp=1"; uci -q delete "${BR}.ports"; uci add_list "${BR}.ports=lan1"; uci add_list "${BR}.ports=lan2"; uci add_list "${BR}.ports=lan3"; }
+[ -n "$BR" ] && { u ${BR}.stp=1; uci -q delete "${BR}.ports"; uci add_list "${BR}.ports=lan1"; uci add_list "${BR}.ports=lan2"; uci add_list "${BR}.ports=lan3"; }
 uci -q delete network.br_mgmt
 uci -q delete network.mgmt
 for X in wwan wwanp wwanb wdsp wdsb usbwan;do uci -q delete network.$X;done
-u network.wan.proto='dhcp'
-u network.wan.metric='10'
-u dhcp.lan='dhcp'
-u dhcp.lan.interface='lan'
-u dhcp.lan.start="$DHCP_START"
-u dhcp.lan.limit="$DHCP_LIMIT"
-u dhcp.lan.leasetime="$DHCP_LEASETIME"
-u dhcp.lan.ignore='0'
+u network.wan.proto=dhcp
+u network.wan.metric=10
 uci -q delete dhcp.mgmt
 dap(){ S=default_radio$1;u wireless.$S=wifi-iface;u wireless.$S.device=radio$1;u wireless.$S.network=lan;u wireless.$S.mode=ap;u wireless.$S.ssid="$2";u wireless.$S.encryption=none;uci -q delete wireless.$S.key;u wireless.$S.disabled=0;}
 dap 1 "$SSID_2G";dap 0 "$SSID_5G";dap 2 "$SSID_5G_HIGH"
@@ -761,7 +758,7 @@ ca
 echo router > /etc/mx4200/mode
 psave router
 psave router-baseline
-if uci -q get uhttpd.main >/dev/null 2>&1; then u uhttpd.main.redirect_https='1'; uci commit uhttpd; fi
+if uci -q get uhttpd.main >/dev/null 2>&1; then u uhttpd.main.redirect_https=1; uci commit uhttpd; fi
 uci -q set tailscale.settings.fw_mode=nftables;uci -q commit tailscale
 for S in tailscale openvpn;do [ -x /etc/init.d/$S ]&&{ /etc/init.d/$S enable;/etc/init.d/$S start >/dev/null 2>&1||true;};done
 /etc/init.d/mxd start >/dev/null 2>&1 || true
@@ -774,7 +771,7 @@ fw_setenv maxpartialboots 3
 fi
 fi
 touch /etc/sysupgrade.conf
-for F in /etc/mx4200 /etc/sysctl.d/99-mx4200-vpn.conf /usr/lib/mxc /usr/sbin/mxm /usr/bin/mx /usr/sbin/mxb /etc/init.d/mxb /usr/sbin/mxu /usr/sbin/mxw /usr/sbin/mxd /etc/init.d/mxd /usr/sbin/mxmod /etc/init.d/mxmod /root/mxr /root/mxa /root/mxwds /etc/profile.d/mx /etc/profile.d/mx.sh;do grep -qxF "$F" /etc/sysupgrade.conf 2>/dev/null||echo "$F">>/etc/sysupgrade.conf;done
+for F in /etc/mx4200 /etc/sysctl.d/99-mx4200-vpn.conf /usr/lib/mxc /usr/sbin/mx* /usr/bin/mx /etc/init.d/mx* /root/mx* /etc/profile.d/mx* /etc/hotplug.d/iface/95-mxmgmt;do grep -qxF "$F" /etc/sysupgrade.conf 2>/dev/null||echo "$F">>/etc/sysupgrade.conf;done
 logger -t mx 'V2 ready'
 sync
 exit 0
