@@ -5,7 +5,6 @@ COUNTRY='GB'
 ROUTER_HOSTNAME='OpenWrt-LS-MX4200v2'
 LAN_IP='192.168.40.1'
 LAN_NETMASK='255.255.255.0'
-AP_MGMT_IP='172.31.254.1'
 DHCP_START='100'
 DHCP_LIMIT='150'
 DHCP_LEASETIME='12h'
@@ -28,7 +27,6 @@ COUNTRY='$COUNTRY'
 ROUTER_HOSTNAME='$ROUTER_HOSTNAME'
 LAN_IP='$LAN_IP'
 LAN_NETMASK='$LAN_NETMASK'
-AP_MGMT_IP='$AP_MGMT_IP'
 DHCP_START='$DHCP_START'
 DHCP_LIMIT='$DHCP_LIMIT'
 DHCP_LEASETIME='$DHCP_LEASETIME'
@@ -98,7 +96,7 @@ ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
 psave(){ N="$1";D="$PROFILE_ROOT/$N";mkdir -p "$D";chmod 700 "$D";for F in $PROFILE_FILES;do [ -f "/etc/config/$F" ]&&cp "/etc/config/$F" "$D/$F";done;date +%s>"$D/saved_at";chmod 600 "$D"/* 2>/dev/null||true;}
-pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;if [ "$M" = ap ]&&[ "$(uci -q get wireless.mx_mgmt.network)" = lan ];then mc "$AP_MGMT_IP" "$LAN_NETMASK" "$DHCP_START";u wireless.mx_mgmt.network=mgmt;u wireless.mx_mgmt.isolate=1;mf;ca;psave ap;fi;echo "$M">/etc/mx4200/mode;ra;}
+pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;if [ "$M" = ap ]&&{ [ "$(uci -q get wireless.mx_mgmt.network)" != mgmt ]||[ "$(uci -q get network.mgmt.ipaddr)" != "$LAN_IP" ];};then mc "$LAN_IP" "$LAN_NETMASK" "$DHCP_START";u wireless.mx_mgmt.network=mgmt;u wireless.mx_mgmt.isolate=1;mf;ca;psave ap;fi;echo "$M">/etc/mx4200/mode;ra;}
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
 savecur(){ M="$(mode)";case "$M" in router|wds|repeater|ap)psave "$M";;esac;}
 priority(){
@@ -304,7 +302,7 @@ uci -q delete "${B}.ports";for I in lan1 lan2 lan3;do uci add_list "${B}.ports=$
 rwan||exit 1
 ld
 for I in wwanp wwanb wdsp wdsb usbwan;do uci -q delete "network.$I";done
-mc "$AP_MGMT_IP" "$LAN_NETMASK" "$DHCP_START"
+mc "$LAN_IP" "$LAN_NETMASK" "$DHCP_START"
 ap(){ S=$1;R=$2;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode='ap';u wireless.$S.network='lan';u wireless.$S.ssid="$Q";u wireless.$S.encryption='sae-mixed';u wireless.$S.key="$P";u wireless.$S.disabled='0';}
 ap mx_ap2 radio1;ap mx_ap5 radio0;ap mx_ap_high radio2
 u wireless.mx_mgmt='wifi-iface';u wireless.mx_mgmt.device='radio1';u wireless.mx_mgmt.mode='ap';u wireless.mx_mgmt.network='mgmt';u wireless.mx_mgmt.ssid="${Q}-Management";u wireless.mx_mgmt.encryption='sae-mixed';u wireless.mx_mgmt.key="$K";u wireless.mx_mgmt.isolate='1';u wireless.mx_mgmt.disabled='0'
@@ -312,7 +310,7 @@ dz uplink;lz;df lan;mf
 Z="$(zs wan)";[ -n "$Z" ]&&{ for I in lan wwanp wwanb usbwan;do uci -q del_list "${Z}.network=$I";done; }
 ca;echo ap >/etc/mx4200/mode;psave ap;priority ap;ra
 echo "Wired AP: all Ethernet ports are LAN; main router supplies DHCP."
-echo "Management SSID: ${Q}-Management | IP: $AP_MGMT_IP"
+echo "Management SSID: ${Q}-Management | IP: $LAN_IP"
 EOF
 chmod 755 /root/mxa
 cat > /usr/sbin/mxb <<'EOF'
@@ -694,7 +692,7 @@ echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
 echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
 echo '            Routed repeater makes the WAN socket a LAN port'
 echo '            Or use WAN as a wired uplink; choose WAN/Wi-Fi priority'
-echo 'mxap        Wired AP: upstream DHCP, isolated Management at 172.31.254.1'
+echo "mxap        Wired AP: upstream DHCP, isolated Management at $LAN_IP"
 echo 'Auto modes: assign 1-9 when saving a mode; 0 disables. mxauto status lists them.'
 echo 'mxusb       Set USB tether as primary, backup or off'
 echo 'mxled       Install or control the optional LED module'
