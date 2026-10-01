@@ -532,7 +532,7 @@ chmod 755 /etc/init.d/mxd
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 . /etc/mx4200/base.conf
-MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules'
+MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/4180a75aa6e496734397f590954588aa4d612342/mx4200-v2/modules'
 LED_MODULE_PATH='led/rev3'
 LED_SHA256='f533eba3dacdb8b20e83bf8e550cdbb4ff0d1166d7145cc97edb3a088d16038d'
 LED_STATE='/etc/mx4200/modules/led.installed'
