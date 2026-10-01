@@ -530,41 +530,42 @@ EOF
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 . /etc/mx4200/base.conf
-MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/09c3a2ac1383caa641d2d4c7ba9fe5a037192b60/mx4200-v2/modules'
-LED_MODULE_PATH='led/rev3'
+MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules'
 LED_SHA256='651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44'
-LED_STATE='/etc/mx4200/modules/led.installed'
 AUTO_SHA256='f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de'
-AUTO_STATE='/etc/mx4200/modules/auto.installed'
-ready(){ [ -x /usr/bin/mxls ] && [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ] && [ "$(cat "$LED_STATE" 2>/dev/null)" = "$LED_SHA256" ]; }
-auto_ready(){ [ -x /usr/sbin/mxauto ] && [ "$(cat "$AUTO_STATE" 2>/dev/null)" = "$AUTO_SHA256" ]; }
-fetch(){
-if command -v uclient-fetch >/dev/null 2>&1 && uclient-fetch -q -T 15 -O "$2" "$1"; then return 0; fi
-if command -v curl >/dev/null 2>&1 && curl -fsSL --connect-timeout 5 --max-time 15 -o "$2" "$1"; then return 0; fi
-return 1
-}
-install_module(){
-PATH_NAME="$1"; EXPECT="$2"; STATE="$3"
-command -v sha256sum >/dev/null 2>&1 || return 1
-mkdir -p /etc/mx4200/modules || return 1
-TMP="/tmp/mx-install.$$"; SUM="$TMP.sha256"
-fetch "$MODULE_BASE_URL/$PATH_NAME/install.sh.sha256" "$SUM" || { rm -f "$TMP" "$SUM"; return 1; }
-HASH="$(awk 'NR==1{print $1}' "$SUM")"
-[ "$HASH" = "$EXPECT" ] && fetch "$MODULE_BASE_URL/$PATH_NAME/install.sh" "$TMP" && [ "$(sha256sum "$TMP" | awk '{print $1}')" = "$EXPECT" ] && sh "$TMP"
-RESULT=$?
-rm -f "$TMP" "$SUM"
-[ "$RESULT" = 0 ] || return 1
-printf '%s\n' "$EXPECT" > "$STATE.new" && mv "$STATE.new" "$STATE"
-}
-install_led(){ ready || { install_module "$LED_MODULE_PATH" "$LED_SHA256" "$LED_STATE" && ready; }; }
-install_auto(){ auto_ready || { install_module auto "$AUTO_SHA256" "$AUTO_STATE" && auto_ready; }; }
+SAMBA_SHA256='a46442f90917be5c2c267b6f6e69c99c1034580583af57fe18d885b0c7d2ce9a'
+UI_SHA256='dd19efc70ec87d23a7d920fda86b856f4feddce5e02b2f1af87b6f534d207a5e'
+select_module(){
 case "$1" in
-once) install_led ;;
-auto-once) install_auto ;;
-service) while true;do [ "$LED_AUTO_INSTALL" != 1 ] || ready || install_led;auto_ready || install_auto;{ [ "$LED_AUTO_INSTALL" != 1 ] || ready; } && auto_ready && exit 0;sleep 30;done ;;
-status) ready && { echo 'LED module installed'; exit 0; }; echo 'LED module pending'; exit 1 ;;
-auto-status) auto_ready && { echo 'Mode module installed'; exit 0; }; echo 'Mode module pending'; exit 1 ;;
-*) echo 'mxmod: once|auto-once|service|status|auto-status'; exit 1 ;;
+led) REL=led/rev3;HASH="$LED_SHA256";BIN=/usr/bin/mxls ;;
+auto) REL=auto;HASH="$AUTO_SHA256";BIN=/usr/sbin/mxauto ;;
+samba) REL=samba;HASH="$SAMBA_SHA256";BIN=/usr/libexec/rpcd/mx.samba ;;
+ui) REL=ui;HASH="$UI_SHA256";BIN=/usr/libexec/rpcd/mx.ui ;;
+*) return 1 ;;
+esac
+STATE="/etc/mx4200/modules/$1.installed"
+}
+ready(){ select_module "$1" && [ -x "$BIN" ] && [ "$(cat "$STATE" 2>/dev/null)" = "$HASH" ] || return 1;[ "$1" != led ] || { [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ]; }; }
+fetch(){
+uclient-fetch -q -T 15 -O "$2" "$1" 2>/dev/null || curl -fsSL --connect-timeout 5 --max-time 15 -o "$2" "$1" 2>/dev/null
+}
+install(){
+ready "$1" && return 0
+select_module "$1" || return 1
+mkdir -p /etc/mx4200/modules || return 1
+T="/tmp/mx-install.$$"; S="$T.sha256"
+fetch "$MODULE_BASE_URL/$REL/install.sh.sha256" "$S" && [ "$(awk 'NR==1{print $1}' "$S")" = "$HASH" ] && fetch "$MODULE_BASE_URL/$REL/install.sh" "$T" && [ "$(sha256sum "$T" | awk '{print $1}')" = "$HASH" ] && sh "$T"
+R=$?;rm -f "$T" "$S"
+[ "$R" = 0 ] && { printf '%s\n' "$HASH" > "$STATE.new" && mv "$STATE.new" "$STATE" && ready "$1"; }
+}
+case "$1" in
+once) install led ;;
+auto-once) install auto ;;
+samba-once) install samba ;;
+ui-once) install ui ;;
+service) while :;do DONE=1;for N in led auto samba ui;do [ "$N" = led ] && [ "$LED_AUTO_INSTALL" != 1 ] && continue;ready "$N" || { install "$N" || DONE=0; };done;[ "$DONE" = 1 ] && exit 0;sleep 30;done ;;
+status|auto-status|samba-status|ui-status) case "$1" in status) N=led;;auto-status) N=auto;;samba-status) N=samba;;*) N=ui;;esac;ready "$N" && { echo "$N installed"; exit 0; };echo "$N pending";exit 1 ;;
+*) echo 'mxmod: once|auto-once|samba-once|ui-once|service|status|auto-status|samba-status|ui-status'; exit 1 ;;
 esac
 EOF
 chmod 755 /usr/sbin/mxmod

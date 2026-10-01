@@ -2,7 +2,7 @@
 
 This directory defines the MX4200 V2/P2 OpenWrt firmware setup. The two configuration inputs are [`uci-defaults.sh`](uci-defaults.sh) and [`packages.txt`](packages.txt). This document describes what the current files actually configure; the shell files are the source of truth if behavior changes.
 
-The firmware builder runs `uci-defaults.sh` on the router's first boot. It writes local scripts, configures OpenWrt through UCI, saves an initial router profile, and starts the local services. The core networking functions do not fetch code from the Internet. Two optional installers are downloaded from this repository when connectivity becomes available: automatic switching **between** saved modes and the advanced LED controller. Once installed, their runtime scripts are local and do not need GitHub on later boots.
+The firmware builder runs `uci-defaults.sh` on the router's first boot. It writes local scripts, configures OpenWrt through UCI, saves an initial router profile, and starts the local services. The core networking functions do not fetch code from the Internet. Four optional installers are downloaded from this repository when connectivity becomes available: automatic switching **between** saved modes, the advanced LED controller, a LuCI Samba user page, and a LuCI MX manager. Once installed, their runtime files are local and do not need GitHub on later boots.
 
 ## Repository and installed files
 
@@ -11,6 +11,8 @@ The firmware builder runs `uci-defaults.sh` on the router's first boot. It write
 | `uci-defaults.sh` | First-boot configuration and all generated core scripts. Firmware selector limit: **40,960 bytes**. |
 | `packages.txt` | Space-separated firmware package selection. |
 | `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer. |
+| `modules/samba/install.sh` and `.sha256` | Optional LuCI Samba account manager installer. |
+| `modules/ui/install.sh` and `.sha256` | Optional LuCI MX manager installer. |
 | `modules/led/rev3/install.sh` and `.sha256` | **Selected** advanced LED installer. |
 | `modules/led/rev2/` | Earlier LED revision; present but not selected by the bootstrap. |
 | `modules/led/` | Earlier root-level LED installer; present but not selected. |
@@ -33,7 +35,7 @@ The first-boot script creates these notable router paths:
 | `/usr/sbin/mxmod`, `/etc/init.d/mxmod` | Optional-module download, verification, installation, and retry. |
 | `/etc/profile.d/mx` | SSH aliases and short login guide. |
 
-The selected LED installer adds `/etc/mx4200/led.conf`, `/usr/bin/mxls`, `/usr/bin/mxld`, and `/etc/init.d/mxl`. The automatic-mode installer adds `/usr/sbin/mxauto` and `/etc/init.d/mxauto`. Generated files are listed in `/etc/sysupgrade.conf`; each optional installer adds its own files there after installation.
+The selected LED installer adds `/etc/mx4200/led.conf`, `/usr/bin/mxls`, `/usr/bin/mxld`, and `/etc/init.d/mxl`. The automatic-mode installer adds `/usr/sbin/mxauto` and `/etc/init.d/mxauto`. The Samba installer adds a LuCI page, a narrowly scoped rpcd method, and `/etc/mx4200/samba-users/` for its account registry. The MX manager installer adds a separate LuCI page and narrowly scoped rpcd method. Generated files are listed in `/etc/sysupgrade.conf`; each optional installer adds its own files there after installation.
 
 ## Default settings and radio mapping
 
@@ -123,15 +125,27 @@ The image includes Tailscale, WireGuard, and OpenVPN tools and LuCI apps. First 
 
 `mxmod` uses `uclient-fetch` first and `curl` as a fallback; **Git is not installed or used**. It downloads each installer's `.sha256` file and `install.sh` from `MODULE_BASE_URL`, checks the published hash against a digest embedded in `uci-defaults.sh`, then checks the installer bytes before executing them. The board-name check inside each installer limits installation to MX4200 V2/P2. Install success is recorded in `/etc/mx4200/modules/`.
 
-The current base URL is pinned to commit `09c3a2ac1383caa641d2d4c7ba9fe5a037192b60` under `mx4200-v2/modules/` in `geekymahar/linksys-openwrt-toolkit`:
+The base URL follows the repository's `main` branch under `mx4200-v2/modules/` in `geekymahar/linksys-openwrt-toolkit`:
 
 ```text
-https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/09c3a2ac1383caa641d2d4c7ba9fe5a037192b60/mx4200-v2/modules
+https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules
 ```
 
-The selected installers are `auto/install.sh` (expected SHA-256 `f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de`) and `led/rev3/install.sh` (expected SHA-256 `651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44`). Because the URL and digests are pinned, changing a file on GitHub's default branch alone **will not** update a flashed router. A future firmware change must deliberately update the pinned commit and digests.
+The selected installers are `auto/install.sh` (expected SHA-256 `f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de`), `led/rev3/install.sh` (expected SHA-256 `651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44`), `samba/install.sh`, and `ui/install.sh` (their expected SHA-256 values are recorded in `uci-defaults.sh`). Their embedded digests keep each installer fixed even though the URL follows `main`. Updating an installer requires updating its `.sha256` and the embedded digest in a new firmware build.
 
-With `LED_AUTO_INSTALL='1'`, the `mxmod` init service retries any missing LED and automatic-mode installers every 30 seconds until they are installed. The automatic-mode installer is attempted regardless of that LED setting. If Internet is unavailable, core routing, DHCP, Wi-Fi, firewall, USB, the `mx` menu, and manual saved-profile selection remain available. The LED and cross-mode auto services start after their installers have been fetched; subsequent boots use their installed local files. `mxled` also offers an immediate manual install attempt without requiring you to run a download command.
+With `LED_AUTO_INSTALL='1'`, the `mxmod` init service retries any missing LED, automatic-mode, Samba, and MX UI installers every 30 seconds until they are installed. The automatic-mode, Samba, and MX UI installers are attempted regardless of that LED setting. A successful verified fetch acts as the Internet check; a failed fetch simply retries. If Internet is unavailable, core routing, DHCP, Wi-Fi, firewall, USB, the SSH `mx` menu, and manual saved-profile selection remain available. The optional features run from locally installed files on subsequent boots. `mxled` also offers an immediate LED install attempt without requiring you to run a download command.
+
+### LuCI MX manager and browser terminal
+
+After the optional UI module installs, sign out of LuCI and back in, then open **Services → MX4200 Manager**. The page shows `mxstatus`, saved profiles, and automatic priorities. It can restore router, baseline, routed repeater, WDS, or wired-AP profiles; save the current profile; choose USB tether and Wi-Fi backhaul roles; run WDS diagnostics or one automatic-mode decision; and inspect or control the advanced LED module. Profile, USB, backhaul, and automatic-mode actions can interrupt connectivity, so the page asks before starting them. The rpcd backend accepts only named actions and validates priority values; it does not grant a generic shell-execution permission.
+
+The firmware already includes `luci-app-ttyd` for **Services → Terminal**. The MX page links to it. Set a root password before using the terminal, log in there normally, and run `mx` to use the full interactive setup, including new Wi-Fi scans, upstream passwords, WAN-port choice, WDS/routed repeater setup, and wired-AP setup. These guided paths still use the core scripts and work offline. The MX page intentionally does not duplicate those network-configuration flows or turn ttyd into a passwordless shell. A new page may need a LuCI sign-out/sign-in to appear after automatic installation.
+
+### LuCI Samba users
+
+After the optional Samba module is installed, sign out of LuCI and back in to refresh its menu, then open **Services → Samba Users**. Create a name such as `alice`; the page creates the Samba-only account `mxsmb_alice`. Passwords must be 12–127 characters. The page can change a Samba password, enable or disable an account, and remove an account. It creates the underlying non-login Unix account and Samba credentials together, so no shell access is granted. Passwords are sent through LuCI's authenticated RPC channel to `smbpasswd` on standard input; they are not stored in the module registry or passed as command-line arguments. Use HTTPS for the LuCI session.
+
+To restrict a share, open **Services → Network Shares**, turn guest access off, and put the full name (for example `mxsmb_alice`) in **Allowed users** for that share. Ensure the share's filesystem permissions allow GID `100` (`users`) to access the files. The page manages only accounts it created with the `mxsmb_` prefix; it cannot alter `root` or other system accounts. The account registry and module files are preserved through `/etc/sysupgrade.conf`. The page does not create a share or change guest/share settings automatically.
 
 ## Advanced LED behavior (selected revision 3)
 
@@ -173,7 +187,7 @@ For direct hardware diagnosis after installation, `/usr/bin/mxls detect` reports
 
 `packages.txt` preinstalls network, Wi-Fi, firewall, USB, VPN, management, and LED hardware support in the firmware. Relevant examples are `wpad-mbedtls` for the full WPA/WPA3/STA/WDS feature set; `ip-full`, `netifd`, `dnsmasq`, `firewall4`, `iw`, `iwinfo`, and `jsonfilter` for the core; USB network drivers; `tailscale`, `wireguard-tools`, `openvpn-openssl`, and `bind-dig`; `uclient-fetch` and `curl` for verified optional installers; and I²C/LED drivers and `i2c-tools` for the advanced LED module. `wpad-basic-mbedtls` and Git are not selected.
 
-The package list also contains optional OpenWrt/LuCI tools such as SQM, DDNS, adblock, Samba, traffic statistics, mwan3, travelmate, and relayd. Their presence in the image **does not mean this script configures those services**. The LED dependencies can be present before the LED software is downloaded.
+The package list also contains optional OpenWrt/LuCI tools such as SQM, DDNS, adblock, Samba, traffic statistics, mwan3, travelmate, and relayd. `shadow-useradd` and `shadow-userdel` support the optional Samba account page; `luci-app-ttyd` supplies the browser terminal. Package presence does not mean the core script configures Samba shares. The LED dependencies can be present before the LED software is downloaded.
 
 ## Linksys dual-image recovery and persistence
 
@@ -197,6 +211,8 @@ Profiles, module files, local helper scripts, and configuration paths are added 
 | `/usr/sbin/mxb auto` (or `primary`, `backup`) | Set within-mode backhaul selection. The interactive menu exposes this too. |
 | `/root/mxwds` | Detailed WDS address/route/DNS/health check. |
 | `/usr/sbin/mxmod status` | Check LED module installation. `auto-status` checks saved-mode module installation. |
+| `/usr/sbin/mxmod samba-status` | Check LuCI Samba user page installation. `samba-once` attempts installation immediately. |
+| `/usr/sbin/mxmod ui-status` | Check LuCI MX manager installation. `ui-once` attempts installation immediately. |
 
 The short names except `mx` are shell aliases loaded through `/etc/profile.d/mx` in an interactive SSH session. Their underlying paths, such as `/usr/sbin/mxm status`, work directly when aliases are not loaded.
 
