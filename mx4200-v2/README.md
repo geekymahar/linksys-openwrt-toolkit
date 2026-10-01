@@ -12,7 +12,7 @@ The firmware builder runs `uci-defaults.sh` on the router's first boot. It write
 | `packages.txt` | Space-separated firmware package selection. |
 | `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer. |
 | `modules/samba/install.sh` and `.sha256` | Optional LuCI Samba account manager installer. |
-| `modules/ui/install.sh` and `.sha256` | Optional LuCI MX manager installer. |
+| `modules/ui/install.sh` and `.sha256` | Optional LuCI MX dashboard and manager installer. |
 | `modules/led/rev3/install.sh` and `.sha256` | **Selected** advanced LED installer. |
 | `modules/led/rev2/` | Earlier LED revision; present but not selected by the bootstrap. |
 | `modules/led/` | Earlier root-level LED installer; present but not selected. |
@@ -137,9 +137,15 @@ With `LED_AUTO_INSTALL='1'`, the `mxmod` init service retries any missing LED, a
 
 ### LuCI MX manager and browser terminal
 
-After the optional UI module installs, sign out of LuCI and back in, then open **Services → MX4200 Manager**. The page shows `mxstatus`, saved profiles, and automatic priorities. It can restore router, baseline, routed repeater, WDS, or wired-AP profiles; save the current profile; choose USB tether and Wi-Fi backhaul roles; run WDS diagnostics or one automatic-mode decision; and inspect or control the advanced LED module. Profile, USB, backhaul, and automatic-mode actions can interrupt connectivity, so the page asks before starting them. The rpcd backend accepts only named actions and validates priority values; it does not grant a generic shell-execution permission.
+On first boot, normal LuCI is available without the UI module. When a working uplink allows the pinned module to download and verify, it installs locally; no GitHub connection is needed on later boots. After installation, sign out of LuCI and back in. **MX Dashboard** becomes the first page after login. In **Advanced settings**, **Open in LuCI** opens the ordinary LuCI status page in a new tab; its menus and settings remain available. Both views read and change the same live OpenWrt configuration. Dashboard changes appear in regular LuCI after its page is refreshed, and changes made in regular LuCI appear in the dashboard after its refresh. The dashboard follows the MX router's own capabilities rather than implementing GL.iNet-only services.
 
-The firmware already includes `luci-app-ttyd` for **Services → Terminal**. The MX page links to it. Set a root password before using the terminal, log in there normally, and run `mx` to use the full interactive setup, including new Wi-Fi scans, upstream passwords, WAN-port choice, WDS/routed repeater setup, and wired-AP setup. These guided paths still use the core scripts and work offline. The MX page intentionally does not duplicate those network-configuration flows or turn ttyd into a passwordless shell. A new page may need a LuCI sign-out/sign-in to appear after automatic installation.
+The sidebar shows an overview, native setup, uplink status with IP/DNS/BSSID/signal/byte counters, saved-mode priorities, Wi-Fi SSIDs and backhaul, local DHCP clients, VPN status, LED controls, system and kernel logs, device health, and MX actions. The Internet probe checks two configured IPs; a failed ping is not proof that all Internet traffic is down. The Clients page lists leases issued by this router, so clients using upstream DHCP in wired AP or WDS mode may not appear. The Internet page presents the existing priority-based failover/failback; it does not claim to load-balance traffic or invent a second Ethernet WAN. The Wireless and Setup pages scan radio2 (5 GHz) and radio1 (2.4 GHz) through the offline core scanner, which excludes the MX4200's own BSSIDs. Scanning may briefly affect an active backhaul.
+
+**Set up Internet** has MX-branded forms for router, routed repeater, WDS repeater, and wired AP. Router mode keeps the default LAN at `192.168.40.1/24` and gets upstream addressing by WAN DHCP. Routed repeater lets the WAN socket serve clients as LAN or act as a wired DHCP uplink, with wired/Wi-Fi preference. The form selects a scanned radio2 upstream and optional radio1 backup, asks explicitly whether an ambiguous `WPA PSK` scan is WPA1 or WPA2, uses the upstream security for repeater client APs, and takes separate client and management passwords. WDS and wired AP use upstream DHCP for ordinary clients and keep isolated Management Wi-Fi; the local management address can change if its subnet overlaps the upstream. USB tethering remains available from Controls. Each form saves a mode profile and priority; setup runs in the background, with a copy of the previous configuration restored if a configuration command or service restart fails. Wrong upstream credentials or incompatible WDS can still leave the newly applied mode without Internet; the Management SSID and offline `mx` menu provide recovery access. The form does not assume an upstream IP range.
+
+**Services → MX4200 Manager** remains available for the full action list in regular LuCI. It shows `mxstatus`, saved profiles, and automatic priorities. It can restore router, baseline, routed repeater, WDS, or wired-AP profiles; save the current profile; choose USB tether and Wi-Fi backhaul roles; run WDS diagnostics or one automatic-mode decision; and inspect or control the advanced LED module. The web setup calls only the MX setup backend; it does not grant generic shell execution. Profile, setup, USB, backhaul, and automatic-mode actions can interrupt connectivity, so the pages ask before starting them.
+
+The firmware already includes `luci-app-ttyd` for **Services → Terminal**. The MX page links to it. Set a root password before using the terminal, log in there normally, and run `mx` to use the full interactive setup, including new Wi-Fi scans, upstream passwords, WAN-port choice, WDS/routed repeater setup, and wired-AP setup. These core scripts still work offline even when the optional UI is absent. The web setup reuses the core helpers but remains a separate interface, so both paths should be tested on actual hardware after changing their shared mode behavior. A new page may need a LuCI sign-out/sign-in to appear after automatic installation.
 
 ### LuCI Samba users
 
@@ -212,7 +218,7 @@ Profiles, module files, local helper scripts, and configuration paths are added 
 | `/root/mxwds` | Detailed WDS address/route/DNS/health check. |
 | `/usr/sbin/mxmod status` | Check LED module installation. `auto-status` checks saved-mode module installation. |
 | `/usr/sbin/mxmod samba-status` | Check LuCI Samba user page installation. `samba-once` attempts installation immediately. |
-| `/usr/sbin/mxmod ui-status` | Check LuCI MX manager installation. `ui-once` attempts installation immediately. |
+| `/usr/sbin/mxmod ui-status` | Check LuCI MX dashboard/manager installation. `ui-once` attempts installation immediately. |
 
 The short names except `mx` are shell aliases loaded through `/etc/profile.d/mx` in an interactive SSH session. Their underlying paths, such as `/usr/sbin/mxm status`, work directly when aliases are not loaded.
 

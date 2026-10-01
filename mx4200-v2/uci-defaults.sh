@@ -453,7 +453,7 @@ IP="$(ip -4 addr show dev br-lan 2>/dev/null|awk '/inet /{sub(/\/.*/,"",$2);prin
 [ -n "$IP" ] && ip -4 route show default dev br-lan 2>/dev/null|grep -q '^default ' || { echo ORANGE; exit; }
 if ! ping -I br-lan -c 1 -W 1 "$DNS_FALLBACK_1" >/dev/null 2>&1 && ! ping -I br-lan -c 1 -W 1 "$WDS_TEST_IP2" >/dev/null 2>&1; then echo ORANGE; exit; fi
 OK=0
-for D in $(ubus call network.interface.lan status 2>/dev/null|jsonfilter -e '@.["dns-server"][*]' 2>/dev/null); do dig -b "$IP" +time=1 +tries=1 +short @"$D" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && { OK=1; break; }; done
+for D in $(ubus call network.interface.lan status 2>/dev/null|jsonfilter -e '@["dns-server"][*]' 2>/dev/null); do dig -b "$IP" +time=1 +tries=1 +short @"$D" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && { OK=1; break; }; done
 [ "$OK" = 1 ] && echo GREEN || echo YELLOW
 EOF
 chmod 755 /usr/sbin/mxw
@@ -463,7 +463,7 @@ cat > /root/mxwds <<'EOF'
 [ "$(mode)" = wds ] || { echo 'Not WDS mode'; exit 1; }
 ip -4 addr show dev br-lan
 ip -4 route show default dev br-lan
-ubus call network.interface.lan status 2>/dev/null|jsonfilter -e 'DNS: @.["dns-server"][*]'
+ubus call network.interface.lan status 2>/dev/null|jsonfilter -e '@["dns-server"][*]'|sed 's/^/DNS: /'
 printf 'WDS health: ';/usr/sbin/mxw
 EOF
 chmod 755 /root/mxwds
@@ -534,7 +534,7 @@ MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-to
 LED_SHA256='651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44'
 AUTO_SHA256='f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de'
 SAMBA_SHA256='a46442f90917be5c2c267b6f6e69c99c1034580583af57fe18d885b0c7d2ce9a'
-UI_SHA256='dd19efc70ec87d23a7d920fda86b856f4feddce5e02b2f1af87b6f534d207a5e'
+UI_SHA256='1ef11b3cfcf6e1eb4326c5d883aa64a9617373f55eb7077606e11e12a09d52d0'
 select_module(){
 case "$1" in
 led) REL=led/rev3;HASH="$LED_SHA256";BIN=/usr/bin/mxls ;;
@@ -563,7 +563,7 @@ once) install led ;;
 auto-once) install auto ;;
 samba-once) install samba ;;
 ui-once) install ui ;;
-service) while :;do DONE=1;for N in led auto samba ui;do [ "$N" = led ] && [ "$LED_AUTO_INSTALL" != 1 ] && continue;ready "$N" || { install "$N" || DONE=0; };done;[ "$DONE" = 1 ] && exit 0;sleep 30;done ;;
+service) while :;do DONE=1;for N in ui auto samba led;do [ "$N" = led ] && [ "$LED_AUTO_INSTALL" != 1 ] && continue;ready "$N" || { install "$N" || DONE=0; };done;[ "$DONE" = 1 ] && exit 0;sleep 30;done ;;
 status|auto-status|samba-status|ui-status) case "$1" in status) N=led;;auto-status) N=auto;;samba-status) N=samba;;*) N=ui;;esac;ready "$N" && { echo "$N installed"; exit 0; };echo "$N pending";exit 1 ;;
 *) echo 'mxmod: once|auto-once|samba-once|ui-once|service|status|auto-status|samba-status|ui-status'; exit 1 ;;
 esac
@@ -661,14 +661,14 @@ ip -4 addr show dev br-lan 2>/dev/null | awk '/inet /{print "WDS upstream IP: "$
 MIP="$(uci -q get network.mgmt.ipaddr 2>/dev/null)"; [ -n "$MIP" ] || MIP="$MGMT_IP"
 echo "Mgmt IP: $MIP"
 else
-for N in wwanp wwanb;do ubus call network.interface.$N status 2>/dev/null|jsonfilter -e "$N IPv4: @.[\"ipv4-address\"][0].address" 2>/dev/null;done
+for N in wwanp wwanb;do ubus call network.interface.$N status 2>/dev/null|jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null|sed "s/^/$N IPv4: /";done
 ip -4 addr show br-lan 2>/dev/null | awk '/inet /{print "LAN: "$2}'
 fi
 [ "$MODE" = ap ]&&echo "Management: $(uci -q get wireless.mx_mgmt.ssid) at $(uci -q get network.mgmt.ipaddr)"
 echo
 [ -f /tmp/mx4200-led-state ] && { echo 'LED:'; cat /tmp/mx4200-led-state; }
 if [ -x /usr/bin/mxls ]; then /usr/bin/mxls detect 2>/dev/null | sed 's/^/  /'; else /usr/sbin/mxmod status; fi
-uci -q get network.usbwan >/dev/null 2>&1 && { echo; ubus call network.interface.usbwan status 2>/dev/null | jsonfilter -e 'USB IPv4: @.["ipv4-address"][0].address' -e 'USB device: @.l3_device' 2>/dev/null; }
+uci -q get network.usbwan >/dev/null 2>&1 && { echo; ubus call network.interface.usbwan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null|sed 's/^/USB IPv4: /';ubus call network.interface.usbwan status 2>/dev/null|jsonfilter -e '@.l3_device' 2>/dev/null|sed 's/^/USB device: /'; }
 }
 lact(){
 if ! /usr/sbin/mxmod status >/dev/null; then
