@@ -5,6 +5,7 @@ COUNTRY='GB'
 ROUTER_HOSTNAME='OpenWrt-LS-MX4200v2'
 LAN_IP='192.168.40.1'
 LAN_NETMASK='255.255.255.0'
+AP_MGMT_IP='172.31.254.1'
 DHCP_START='100'
 DHCP_LIMIT='150'
 DHCP_LEASETIME='12h'
@@ -27,6 +28,7 @@ COUNTRY='$COUNTRY'
 ROUTER_HOSTNAME='$ROUTER_HOSTNAME'
 LAN_IP='$LAN_IP'
 LAN_NETMASK='$LAN_NETMASK'
+AP_MGMT_IP='$AP_MGMT_IP'
 DHCP_START='$DHCP_START'
 DHCP_LIMIT='$DHCP_LIMIT'
 DHCP_LEASETIME='$DHCP_LEASETIME'
@@ -62,6 +64,18 @@ lz(){ Z="$(zs lan)";[ -n "$Z" ]||{ Z="firewall.$(uci add firewall zone)";u "${Z}
 wz(){ Z="$(zs wan)";[ -n "$Z" ]||return 1;u "${Z}.masq=1";u "${Z}.mtu_fix=1";}
 fw(){ for F in $(uci show firewall 2>/dev/null|awk -F= '$2=="forwarding"{print $1}');do [ "$(uci -q get "$F.src")" = "$1" ]&&[ "$(uci -q get "$F.dest")" = "$2" ]&&return;done;F="$(uci add firewall forwarding)";u "firewall.$F.src=$1";u "firewall.$F.dest=$2";}
 l2w(){ df lan;fw lan wan;}
+ld(){
+u network.lan=interface;u network.lan.device=br-lan;u network.lan.proto=dhcp;u network.lan.delegate=0
+for O in ipaddr netmask gateway dns ip6assign ip6hint ip6class metric;do uci -q delete "network.lan.$O";done
+u dhcp.lan=dhcp;u dhcp.lan.interface=lan;u dhcp.lan.ignore=1;u dhcp.lan.ra=disabled;u dhcp.lan.dhcpv6=disabled;u dhcp.lan.ndp=disabled
+}
+mc(){
+uci -q delete network.br_mgmt;u network.br_mgmt=device;u network.br_mgmt.name=br-mgmt;u network.br_mgmt.type=bridge;u network.br_mgmt.bridge_empty=1
+[ "$4" = lan1 ]&&uci add_list network.br_mgmt.ports=lan1
+uci -q delete network.mgmt;u network.mgmt=interface;u network.mgmt.device=br-mgmt;u network.mgmt.proto=static;u network.mgmt.ipaddr="$1";u network.mgmt.netmask="$2";u network.mgmt.delegate=0
+uci -q delete dhcp.mgmt;u dhcp.mgmt=dhcp;u dhcp.mgmt.interface=mgmt;u dhcp.mgmt.start="$3";u dhcp.mgmt.limit=100;u dhcp.mgmt.leasetime="${5:-$DHCP_LEASETIME}";u dhcp.mgmt.ignore=0;u dhcp.mgmt.ra=disabled;u dhcp.mgmt.dhcpv6=disabled;u dhcp.mgmt.ndp=disabled
+}
+mf(){ dz mgmt;Z="$(uci add firewall zone)";u "firewall.$Z.name=mgmt";u "firewall.$Z.input=ACCEPT";u "firewall.$Z.output=ACCEPT";u "firewall.$Z.forward=REJECT";uci add_list "firewall.$Z.network=mgmt";}
 uz(){ dz uplink;Z="$(uci add firewall zone)";u "firewall.$Z.name=uplink";u "firewall.$Z.input=REJECT";u "firewall.$Z.output=ACCEPT";u "firewall.$Z.forward=REJECT";u "firewall.$Z.masq=1";u "firewall.$Z.mtu_fix=1";uci add_list "firewall.$Z.network=wwanp";uci -q get network.wwanb >/dev/null&&uci add_list "firewall.$Z.network=wwanb";for N in vpn tailscale;do [ -n "$(zs "$N")" ]&&fw "$N" uplink;done;}
 pr(){ S=$1;for I in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10;do uci add_list "firewall.$S.src_ip=$I";done;}
 mr(){ S=mx_mgmt_$1;uci -q delete firewall.$S;u firewall.$S=rule;u firewall.$S.src="$1";pr $S;u firewall.$S.proto=tcp;u firewall.$S.dest_port='22 80 443';u firewall.$S.target=ACCEPT;}
@@ -84,7 +98,7 @@ ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
 psave(){ N="$1";D="$PROFILE_ROOT/$N";mkdir -p "$D";chmod 700 "$D";for F in $PROFILE_FILES;do [ -f "/etc/config/$F" ]&&cp "/etc/config/$F" "$D/$F";done;date +%s>"$D/saved_at";chmod 600 "$D"/* 2>/dev/null||true;}
-pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;echo "$M">/etc/mx4200/mode;ra;}
+pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;if [ "$M" = ap ]&&[ "$(uci -q get wireless.mx_mgmt.network)" = lan ];then mc "$AP_MGMT_IP" "$LAN_NETMASK" "$DHCP_START";u wireless.mx_mgmt.network=mgmt;u wireless.mx_mgmt.isolate=1;mf;ca;psave ap;fi;echo "$M">/etc/mx4200/mode;ra;}
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
 savecur(){ M="$(mode)";case "$M" in router|wds|repeater|ap)psave "$M";;esac;}
 priority(){
@@ -204,37 +218,8 @@ uci -q delete "${BR}.ports"
 if [ "$TARGET" = wds ]; then
 uci add_list "${BR}.ports=lan2"
 uci add_list "${BR}.ports=lan3"
-u network.lan='interface'
-u network.lan.device='br-lan'
-u network.lan.proto='dhcp'
-u network.lan.metric='5'
-u network.lan.delegate='0'
-for O in ipaddr netmask gateway dns ip6assign ip6hint ip6class; do uci -q delete "network.lan.$O"; done
-uci -q delete network.br_mgmt
-u network.br_mgmt='device'
-u network.br_mgmt.name='br-mgmt'
-u network.br_mgmt.type='bridge'
-uci add_list network.br_mgmt.ports='lan1'
-uci -q delete network.mgmt
-u network.mgmt='interface'
-u network.mgmt.device='br-mgmt'
-u network.mgmt.proto='static'
-u network.mgmt.ipaddr="$R_LAN_IP"
-u network.mgmt.netmask="$R_LAN_NETMASK"
-u network.mgmt.delegate='0'
-u dhcp.lan='dhcp'
-u dhcp.lan.interface='lan'
-u dhcp.lan.ignore='1'
-u dhcp.lan.ra='disabled'
-u dhcp.lan.dhcpv6='disabled'
-u dhcp.lan.ndp='disabled'
-uci -q delete dhcp.mgmt
-u dhcp.mgmt='dhcp'
-u dhcp.mgmt.interface='mgmt'
-u dhcp.mgmt.start="$R_DHCP_START"
-u dhcp.mgmt.limit='100'
-u dhcp.mgmt.leasetime="$R_DHCP_LEASE"
-u dhcp.mgmt.ignore='0'
+ld;u network.lan.metric='5'
+mc "$R_LAN_IP" "$R_LAN_NETMASK" "$R_DHCP_START" lan1 "$R_DHCP_LEASE"
 else
 uci add_list "${BR}.ports=lan1"
 uci add_list "${BR}.ports=lan2"
@@ -280,7 +265,7 @@ dz mgmt;dz uplink;lz;wz
 WZ="$(zs wan)";[ -n "$WZ" ]&&{ for N in wan lan wwan wwanp wwanb usbwan;do uci -q del_list "${WZ}.network=$N";done;uci add_list "${WZ}.network=wan";[ "$TARGET" = wds ]&&uci add_list "${WZ}.network=lan";}
 uci -q delete firewall.mx_wan_lan
 if [ "$TARGET" = wds ];then
-dz lan;uci -q delete firewall.mx_mgmt_wan;df mgmt;MZ="$(uci add firewall zone)";u "firewall.$MZ.name=mgmt";u "firewall.$MZ.input=ACCEPT";u "firewall.$MZ.output=ACCEPT";u "firewall.$MZ.forward=REJECT";uci add_list "firewall.$MZ.network=mgmt";fw mgmt wan
+dz lan;uci -q delete firewall.mx_mgmt_wan;mf;fw mgmt wan
 else
 uz;df lan;df uplink;fw lan uplink;fw lan wan;mr wan;mr uplink
 uci -q delete firewall.mx_wan_lan
@@ -317,18 +302,17 @@ savecur;wifi_clear;rb
 B="$(ds br-lan)";[ -n "$B" ]||{ echo 'br-lan not found';exit 1; }
 uci -q delete "${B}.ports";for I in lan1 lan2 lan3;do uci add_list "${B}.ports=$I";done
 rwan||exit 1
-u network.lan='interface';u network.lan.device='br-lan';u network.lan.proto='dhcp';u network.lan.delegate='0'
-for I in ipaddr netmask gateway dns ip6assign ip6hint ip6class metric;do uci -q delete "network.lan.$I";done
-for I in wwanp wwanb wdsp wdsb usbwan br_mgmt mgmt;do uci -q delete "network.$I";done
-u dhcp.lan='dhcp';u dhcp.lan.interface='lan';u dhcp.lan.ignore='1';u dhcp.lan.ra='disabled';u dhcp.lan.dhcpv6='disabled';u dhcp.lan.ndp='disabled';uci -q delete dhcp.mgmt
+ld
+for I in wwanp wwanb wdsp wdsb usbwan;do uci -q delete "network.$I";done
+mc "$AP_MGMT_IP" "$LAN_NETMASK" "$DHCP_START"
 ap(){ S=$1;R=$2;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode='ap';u wireless.$S.network='lan';u wireless.$S.ssid="$Q";u wireless.$S.encryption='sae-mixed';u wireless.$S.key="$P";u wireless.$S.disabled='0';}
 ap mx_ap2 radio1;ap mx_ap5 radio0;ap mx_ap_high radio2
-u wireless.mx_mgmt='wifi-iface';u wireless.mx_mgmt.device='radio1';u wireless.mx_mgmt.mode='ap';u wireless.mx_mgmt.network='lan';u wireless.mx_mgmt.ssid="${Q}-Management";u wireless.mx_mgmt.encryption='sae-mixed';u wireless.mx_mgmt.key="$K";u wireless.mx_mgmt.disabled='0'
-dz mgmt;dz uplink;lz;df lan
+u wireless.mx_mgmt='wifi-iface';u wireless.mx_mgmt.device='radio1';u wireless.mx_mgmt.mode='ap';u wireless.mx_mgmt.network='mgmt';u wireless.mx_mgmt.ssid="${Q}-Management";u wireless.mx_mgmt.encryption='sae-mixed';u wireless.mx_mgmt.key="$K";u wireless.mx_mgmt.isolate='1';u wireless.mx_mgmt.disabled='0'
+dz uplink;lz;df lan;mf
 Z="$(zs wan)";[ -n "$Z" ]&&{ for I in lan wwanp wwanb usbwan;do uci -q del_list "${Z}.network=$I";done; }
 ca;echo ap >/etc/mx4200/mode;psave ap;priority ap;ra
 echo "Wired AP: all Ethernet ports are LAN; main router supplies DHCP."
-echo "Management SSID: ${Q}-Management"
+echo "Management SSID: ${Q}-Management | IP: $AP_MGMT_IP"
 EOF
 chmod 755 /root/mxa
 cat > /usr/sbin/mxb <<'EOF'
@@ -534,7 +518,7 @@ cat > /usr/sbin/mxmod <<'EOF'
 . /etc/mx4200/base.conf
 MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/4180a75aa6e496734397f590954588aa4d612342/mx4200-v2/modules'
 LED_MODULE_PATH='led/rev3'
-LED_SHA256='f533eba3dacdb8b20e83bf8e550cdbb4ff0d1166d7145cc97edb3a088d16038d'
+LED_SHA256='651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44'
 LED_STATE='/etc/mx4200/modules/led.installed'
 AUTO_SHA256='f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de'
 AUTO_STATE='/etc/mx4200/modules/auto.installed'
@@ -665,7 +649,7 @@ else
 for N in wwanp wwanb;do ubus call network.interface.$N status 2>/dev/null|jsonfilter -e "$N IPv4: @.[\"ipv4-address\"][0].address" 2>/dev/null;done
 ip -4 addr show br-lan 2>/dev/null | awk '/inet /{print "LAN: "$2}'
 fi
-[ "$MODE" = ap ]&&echo "Management SSID: $(uci -q get wireless.mx_mgmt.ssid)"
+[ "$MODE" = ap ]&&echo "Management: $(uci -q get wireless.mx_mgmt.ssid) at $(uci -q get network.mgmt.ipaddr)"
 echo
 [ -f /tmp/mx4200-led-state ] && { echo 'LED:'; cat /tmp/mx4200-led-state; }
 if [ -x /usr/bin/mxls ]; then /usr/bin/mxls detect 2>/dev/null | sed 's/^/  /'; else /usr/sbin/mxmod status; fi
@@ -710,7 +694,7 @@ echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
 echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
 echo '            Routed repeater makes the WAN socket a LAN port'
 echo '            Or use WAN as a wired uplink; choose WAN/Wi-Fi priority'
-echo 'mxap        Wired AP: all ports LAN, main-router DHCP, secured Management SSID'
+echo 'mxap        Wired AP: upstream DHCP, isolated Management at 172.31.254.1'
 echo 'Auto modes: assign 1-9 when saving a mode; 0 disables. mxauto status lists them.'
 echo 'mxusb       Set USB tether as primary, backup or off'
 echo 'mxled       Install or control the optional LED module'
