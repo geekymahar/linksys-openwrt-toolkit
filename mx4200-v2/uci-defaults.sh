@@ -92,7 +92,7 @@ u wireless.radio1.band=2g;u wireless.radio1.htmode="$MODE_2G"
 u wireless.radio0.band=5g;u wireless.radio0.htmode="$MODE_5G"
 u wireless.radio2.band=5g;u wireless.radio2.htmode="$MODE_5G_HIGH"
 }
-ap(){ local S R N Q K;S=$1;R=$2;N=$3;Q=$4;K=$5;u wireless.$S=wifi-iface;u wireless.$S.device="$R";u wireless.$S.mode=ap;u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.encryption=sae-mixed;u wireless.$S.key="$K";u wireless.$S.disabled=0;}
+ap(){ local S=$1 E=${6:-sae-mixed};u wireless.$S=wifi-iface;u wireless.$S.device="$2";u wireless.$S.mode=ap;u wireless.$S.network="$3";u wireless.$S.ssid="$4";u wireless.$S.encryption="$E";nk "$E"&&u wireless.$S.key="$5";u wireless.$S.disabled=0;}
 ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
@@ -101,7 +101,7 @@ pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
 savecur(){ M="$(mode)";case "$M" in router|wds|repeater|ap)psave "$M";;esac;}
 priority(){
-F=/etc/mx4200/auto-priority;P="$(awk -v m="$1" '$1==m{print $2}' "$F" 2>/dev/null)";printf 'Auto priority for %s (1-9, 0=off) [%s]: ' "$1" "${P:-0}"
+F=/etc/mx4200/auto-priority;P="$(awk -v m="$1" '$1==m{print $2}' "$F" 2>/dev/null)";printf 'Auto priority for %s (1=first, 9=last, 0=manual; online module) [%s]: ' "$1" "${P:-0}"
 read -r V||return 1;V=${V:-${P:-0}};case "$V" in [0-9]);;*)return 1;;esac
 [ -f "$F" ]||:>"$F";grep -v "^$1 " "$F">"$F.new";[ "$V" = 0 ]||echo "$1 $V">>"$F.new";mv "$F.new" "$F";chmod 600 "$F";date +%s >/tmp/mxauto-manual
 }
@@ -121,8 +121,9 @@ done
 awk -v x="$X" 'BEGIN{n=split(x,z," ");for(i=1;i<=n;i++)a[z[i]]=1}function f(){if(s!=""&&!a[tolower(b)]){v=g+0;if(!(s in q)||v>q[s]){q[s]=v;l[s]=s"\t"c"\t"g"\t"e"\t"b}}}/^Cell /{f();s=c=g=e="";b=$5;next}/ESSID:/{y=$0;sub(/.*ESSID: "/,"",y);sub(/"[[:space:]]*$/,"",y);s=y}/Channel:/{for(i=1;i<=NF;i++)if($i=="Channel:"){c=$(i+1);break}}/Signal:/{for(i=1;i<=NF;i++)if($i=="Signal:"){g=$(i+1);break}}/Encryption:/{y=$0;sub(/^[[:space:]]*Encryption:[[:space:]]*/,"",y);e=y}END{f();for(i in l)print l[i]}' "$A">"$O"
 rm -f "$A" "$P";[ -s "$O" ]
 }
-e2u(){ E="$(echo "$1"|tr A-Z a-z)";case "$E" in *owe*)echo owe;;*sae*psk*|*psk*sae*|*sae*wpa2*|*wpa2*sae*)echo sae-mixed;;*sae*)echo sae;;*wpa2*psk*|*psk*wpa2*)echo psk2;;*wpa*psk*|*psk*wpa*)echo psk;;*none*|*open*)echo none;;*)echo unsupported;;esac;}
+e2u(){ E="$(echo "$1"|tr A-Z a-z)";case "$E" in *owe*)echo owe;;*sae*psk*|*psk*sae*|*sae*wpa2*|*wpa2*sae*)echo sae-mixed;;*sae*)echo sae;;*mix*wpa*psk*|*wpa*wpa2*psk*)echo psk-mixed;;*wpa2*psk*|*psk*wpa2*)echo psk2;;*wpa*psk*|*psk*wpa*)echo psk;;*none*|*open*)echo none;;*)echo unsupported;;esac;}
 nk(){ case "$1" in none|owe)return 1;;*)return 0;;esac;}
+passok(){ [ "${#1}" -ge 8 ]&&[ "${#1}" -le 63 ];}
 rs(){ printf %s "$1";if IFS= read -r -s SECRET 2>/dev/null;then echo;else IFS= read -r SECRET;fi;}
 EOF
 chmod 755 /usr/lib/mxc
@@ -134,9 +135,10 @@ case "$TARGET" in wds|repeater);;*) exit 1;;esac
 date +%s >/tmp/mxauto-manual
 WAN_PORT=lan;WAN_PREF=wifi
 if [ "$TARGET" = repeater ];then
-while true;do printf 'WAN socket: 1=LAN port 2=wired WAN uplink [1]: ';read -r A||exit 1;case "$A" in ''|1)break;;2)WAN_PORT=wan;break;;esac;done
+while true;do printf 'WAN socket: 1=client LAN port 2=wired uplink [1]: ';read -r A||exit 1;case "$A" in ''|1)break;;2)WAN_PORT=wan;break;;esac;done
 if [ "$WAN_PORT" = wan ];then
-while true;do printf 'Uplink priority: 1=wired WAN 2=Wi-Fi repeater [2]: ';read -r A||exit 1;case "$A" in ''|2)break;;1)WAN_PREF=wan;break;;esac;done
+echo 'Failover needs route loss, not just an Internet outage.'
+while true;do printf 'Preferred uplink: 1=wired WAN 2=Wi-Fi repeater [2]: ';read -r A||exit 1;case "$A" in ''|2)break;;1)WAN_PREF=wan;break;;esac;done
 fi
 fi
 scan_band(){
@@ -148,7 +150,7 @@ if [ -n "$MATCH_SSID" ];then
 while IFS= read -r ROW;do [ "${ROW%%"$TAB"*}" = "$MATCH_SSID" ]&&{ LINE="$ROW";break; };done<"$T"
 [ -n "$LINE" ]||{ rm -f "$T";echo "$MATCH_SSID not found on $L.";return 1; }
 else
-N=0;while IFS="$TAB" read -r S C G E B;do N=$((N+1));printf '%2d) %s  [ch %s, %s dBm, %s]\n' "$N" "$S" "$C" "$G" "$E";done<"$T"
+N=0;while IFS="$TAB" read -r S C G E B;do N=$((N+1));printf '%2d) %s  [ch %s, %s dBm, %s, %s]\n' "$N" "$S" "$C" "$G" "$E" "$B";done<"$T"
 while true;do printf 'Select network number (0 = rescan): ';read -r P||{ rm -f "$T";return 1; };[ "$P" = 0 ]&&{ rm -f "$T";return 2; };case "$P" in *[!0-9]*|'') continue;;esac;LINE="$(sed -n "${P}p" "$T")";[ -n "$LINE" ]&&break;done
 fi
 IFS="$TAB" read -r SEL_SSID SEL_CHANNEL _ SEL_ENC_TEXT SEL_BSSID <<EOT
@@ -156,11 +158,11 @@ $LINE
 EOT
 SEL_ENC="$(e2u "$SEL_ENC_TEXT")";rm -f "$T";[ "$SEL_ENC" != unsupported ]||{ echo "Unsupported: $SEL_ENC_TEXT";return 1; };SEL_PASS=''
 case "$SEL_ENC" in
-psk|psk2)
-echo "Scan security: $SEL_ENC_TEXT"
+psk)
+echo "Scan reports $SEL_ENC_TEXT for $SEL_BSSID (WPA1). Check router setting."
 while true;do
-printf 'Upstream security: 1=WPA2-PSK 2=legacy WPA-PSK [1]: ';read -r ESEL||return 1
-case "$ESEL" in ''|1)SEL_ENC=psk2;break;;2)SEL_ENC=psk;break;;*)echo 'Choose 1 or 2.';;esac
+printf 'Actual upstream: 1=WPA2-PSK 2=WPA1-PSK (no default): ';read -r ESEL||return 1
+case "$ESEL" in 1)SEL_ENC=psk2;break;;2)SEL_ENC=psk;break;;*)echo 'Choose 1 or 2.';;esac
 done;;
 esac
 if [ -n "$MATCH_SSID" ]&&[ -n "$REUSE_PASS" ]&&! nk "$SEL_ENC";then
@@ -168,7 +170,7 @@ echo "$L network has no password; choose it separately."
 return 1
 fi
 if nk "$SEL_ENC";then
-if [ -n "$MATCH_SSID" ];then SEL_PASS="$REUSE_PASS";else rs "Password for $SEL_SSID: ";SEL_PASS="$SECRET";fi
+if [ -n "$MATCH_SSID" ];then SEL_PASS="$REUSE_PASS";else rs "Upstream Wi-Fi password for $SEL_SSID: ";SEL_PASS="$SECRET";fi
 [ -n "$SEL_PASS" ]||{ echo 'Password required';return 1; }
 fi
 }
@@ -181,13 +183,13 @@ R_DHCP_START="$(uci -c "$RD" -q get dhcp.lan.start 2>/dev/null)"; [ -n "$R_DHCP_
 R_DHCP_LIMIT="$(uci -c "$RD" -q get dhcp.lan.limit 2>/dev/null)"; [ -n "$R_DHCP_LIMIT" ] || R_DHCP_LIMIT="$DHCP_LIMIT"
 R_DHCP_LEASE="$(uci -c "$RD" -q get dhcp.lan.leasetime 2>/dev/null)"; [ -n "$R_DHCP_LEASE" ] || R_DHCP_LEASE="$DHCP_LEASETIME"
 PR='radio2'; PL='5 GHz'; OR='radio1'; OL='2.4 GHz'
-echo 'Primary backhaul: 5 GHz/radio2; optional backup: 2.4 GHz/radio1'
+echo 'Primary: 5G/radio2 (DFS delay); backup: 2.4G/radio1.'
 while true;do scan_band "$PR" "$PL";R=$?;[ "$R" = 0 ]&&break;[ "$R" = 2 ]&&continue;echo '1=retry  0=cancel';read -r A;[ "$A" = 1 ]||exit 1;done
 PSSID="$SEL_SSID";PENC="$SEL_ENC";PPASS="$SEL_PASS";PCHAN="$SEL_CHANNEL";PAP="$SEL_BSSID"
-echo;echo "Selected: $PSSID ($PL ch $PCHAN, $PENC)"
+echo;echo "Selected: $PSSID ($PL ch $PCHAN, $PENC); client APs: $PENC"
 BACKUP=0;BSSID='';BENC='';BPASS='';BRAD='';BCHAN='';BAP=''
 while true;do
-echo;printf 'Backup 2.4 GHz: 1=same SSID/password 2=choose Wi-Fi 0=skip: ';read -r B||break
+echo;printf '2.4 backup: 1=same name/key 2=scan another 0=none: ';read -r B||break
 case "$B" in
 1)scan_band "$OR" "$OL" "$PSSID" "$PPASS";R=$?;;
 2)scan_band "$OR" "$OL";R=$?;;
@@ -196,17 +198,20 @@ case "$B" in
 esac
 [ "$R" = 0 ]&&{ BACKUP=1;BRAD="$OR";BSSID="$SEL_SSID";BENC="$SEL_ENC";BPASS="$SEL_PASS";BCHAN="$SEL_CHANNEL";BAP="$SEL_BSSID";echo "Backup: $BSSID ($OL ch $BCHAN, $BENC)";break; }
 done
-rs "Password for ${PSSID}-RPT Wi-Fi: "
+CLIENT_PASS=''
+if nk "$PENC";then
+rs "MX4200 client Wi-Fi password for ${PSSID}-RPT (not upstream, 8-63 chars): "
 CLIENT_PASS="$SECRET"
-[ -n "$CLIENT_PASS" ] || { echo 'Client password required'; exit 1; }
+passok "$CLIENT_PASS" || { echo 'Repeater password must be 8-63 characters'; exit 1; }
+else echo "Client Wi-Fi: $PENC (no password)";fi
 MGMT_PASS=''
 if [ "$TARGET" = wds ]; then
 echo
 echo "Mgmt AP: ${PSSID}-Management"
 echo "Mgmt IP: $MGMT_IP"
-rs 'Management Wi-Fi password: '
+rs 'Separate Management Wi-Fi password (8-63 chars): '
 MGMT_PASS="$SECRET"
-[ -n "$MGMT_PASS" ] || { echo 'Management password required'; exit 1; }
+passok "$MGMT_PASS" || { echo 'Management password must be 8-63 characters'; exit 1; }
 fi
 wifi_clear
 u system.@system[0].hostname="$ROUTER_HOSTNAME"
@@ -245,7 +250,7 @@ fi
 sta(){ S=$1;R=$2;N=$3;Q=$4;A=$5;E=$6;K=$7;u wireless.$S=wifi-iface;u wireless.$S.device="$R";u wireless.$S.mode=sta;u wireless.$S.network="$N";u wireless.$S.ssid="$Q";u wireless.$S.bssid="$A";u wireless.$S.encryption="$E";nk "$E"&&u wireless.$S.key="$K";[ "$TARGET" = wds ]&&u wireless.$S.wds=1;u wireless.$S.disabled=0;}
 u "wireless.$PR.channel=$PCHAN";sta mx_primary "$PR" "$( [ "$TARGET" = wds ]&&echo wdsp||echo wwanp )" "$PSSID" "$PAP" "$PENC" "$PPASS"
 if [ "$BACKUP" = 1 ];then u "wireless.$BRAD.channel=$BCHAN";sta mx_backup "$BRAD" "$( [ "$TARGET" = wds ]&&echo wdsb||echo wwanb )" "$BSSID" "$BAP" "$BENC" "$BPASS";else uci -q delete wireless.mx_backup;uci -q delete network.wwanb;uci -q delete network.wdsb;fi
-ap mx_ap5 radio0 lan "${PSSID}-RPT-5G" "$CLIENT_PASS";ap mx_ap2 radio1 lan "${PSSID}-RPT-2G" "$CLIENT_PASS"
+ap mx_ap5 radio0 lan "${PSSID}-RPT-5G" "$CLIENT_PASS" "$PENC";ap mx_ap2 radio1 lan "${PSSID}-RPT-2G" "$CLIENT_PASS" "$PENC"
 if [ "$TARGET" = wds ];then ap mx_mgmt radio1 mgmt "${PSSID}-Management" "$MGMT_PASS";else uci -q delete wireless.mx_mgmt;fi
 dz mgmt;dz uplink;lz;wz
 WZ="$(zs wan)";[ -n "$WZ" ]&&{ for N in wan lan wwan wwanp wwanb usbwan;do uci -q del_list "${WZ}.network=$N";done;uci add_list "${WZ}.network=wan";[ "$TARGET" = wds ]&&uci add_list "${WZ}.network=lan";}
@@ -254,7 +259,6 @@ if [ "$TARGET" = wds ];then
 dz lan;uci -q delete firewall.mx_mgmt_wan;mf;fw mgmt wan
 else
 uz;df lan;df uplink;fw lan uplink;fw lan wan;mr wan;mr uplink
-uci -q delete firewall.mx_wan_lan
 fi
 ca
 echo "$TARGET" > /etc/mx4200/mode
@@ -283,7 +287,7 @@ printf 'AP Wi-Fi name [%s]: ' "$WIFI_PREFIX";IFS= read -r Q||exit 1;Q=${Q:-$WIFI
 [ "$(printf %s "$Q"|LC_ALL=C wc -c)" -le 21 ]||{ echo 'Name too long for -Management SSID';exit 1; }
 rs "Password for $Q Wi-Fi: ";P=$SECRET
 rs "Password for ${Q}-Management Wi-Fi: ";K=$SECRET
-for V in "$P" "$K";do [ "${#V}" -ge 8 ]&&[ "${#V}" -le 63 ]||{ echo 'Passwords must be 8-63 characters';exit 1; };done
+for V in "$P" "$K";do passok "$V"||{ echo 'Passwords must be 8-63 characters';exit 1; };done
 savecur;wifi_clear;rb
 B="$(ds br-lan)";[ -n "$B" ]||{ echo 'br-lan not found';exit 1; }
 uci -q delete "${B}.ports";for I in lan1 lan2 lan3;do uci add_list "${B}.ports=$I";done
@@ -602,21 +606,21 @@ esac
 }
 pact(){
 echo
-echo '1=WDS 2=Routed 0=Cancel'
+echo '1=WDS (upstream WDS, same DHCP) 2=Routed (any AP, own DHCP/NAT) 0=Cancel'
 printf 'Choose: '; read -r C
 case "$C" in 1) T=wds;; 2) T=repeater;; *) return;; esac
 echo
 if pex "$T"; then
 psum "$T"
 echo
-echo '1=Previous 2=New 0=Cancel'
+echo '1=Previous saved settings 2=New scan/setup 0=Cancel'
 printf 'Choose: '; read -r A
 case "$A" in
 1) sil "$T"; priority "$T"; pload "$T" ;;
 2) exec /root/mxr "$T" ;;
 esac
 else
-echo 'No profile.'
+echo 'No saved profile; starting new setup.'
 exec /root/mxr "$T"
 fi
 }
@@ -687,6 +691,7 @@ while true; do
 echo
 echo '=== MX4200 ==='
 echo "Current mode: $(mode)"
+echo 'Router=own DHCP | Repeater=Wi-Fi uplink | Wired-AP=cable, upstream DHCP'
 echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 8=Wired-AP 0=Exit'
 printf 'Choose: '; read -r C
 case "$C" in
@@ -697,17 +702,14 @@ done
 case "$1" in
 router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; wdstest) /root/mxwds;;
 help|-h|--help)
-echo 'mx          Interactive setup'
-echo 'mxstatus    Mode, IPs, upstream and LED'
-echo 'mxrouter    Restore router/saved profile'
-echo 'mxrepeater  WDS or routed; scans upstream Wi-Fi'
-echo '            2.4 GHz backup may reuse SSID/password'
-echo '            Routed: WAN socket can be LAN or uplink; set priority'
-echo "mxap        Wired AP; upstream DHCP; Management $MGMT_IP (auto fallback)"
-echo 'Auto modes: priority 1-9, 0=off; mxauto status'
-echo 'mxusb       USB tether: primary, backup or off'
-echo 'mxled       Optional LED installer/control'
-echo 'In mx: 4    5 GHz/2.4 GHz backhaul or auto'
+echo 'mx: guided setup; mxstatus: mode/IP/route/LED'
+echo 'mxrouter: saved/baseline router profile'
+echo 'mxrepeater: WDS/routed; scan 5G, optional 2.4G backup'
+echo '  Routed WAN: LAN or uplink, then priority'
+echo "mxap: wired AP; upstream DHCP; Management $MGMT_IP (fallback)"
+echo 'mxauto status: mode priorities 1-9, 0=off'
+echo 'mxusb: tether primary/backup/off; mxled: optional LED'
+echo 'mx menu 4: 5G/2.4G backhaul or auto'
 ;;
 '') menu;; *) menu;;
 esac
