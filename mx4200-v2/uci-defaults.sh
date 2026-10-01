@@ -21,6 +21,7 @@ SSID_5G_HIGH="${WIFI_PREFIX}-Max"
 mkdir -p /etc/mx4200/profiles /usr/lib/mx4200
 chmod 700 /etc/mx4200 /etc/mx4200/profiles
 cat > /etc/mx4200/base.conf <<EOF
+WIFI_PREFIX='$WIFI_PREFIX'
 LED_AUTO_INSTALL='$LED_AUTO_INSTALL'
 COUNTRY='$COUNTRY'
 ROUTER_HOSTNAME='$ROUTER_HOSTNAME'
@@ -83,9 +84,14 @@ ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}
 ra(){ [ "$MX4200_NO_RELOAD" = 1 ]&&return;reload_config 2>/dev/null||true;/etc/init.d/network restart;sleep 3;/etc/init.d/dnsmasq restart;/etc/init.d/firewall restart;}
 pex(){ D="$PROFILE_ROOT/$1";[ -f "$D/network" ]&&[ -f "$D/wireless" ]&&[ -f "$D/dhcp" ]&&[ -f "$D/firewall" ];}
 psave(){ N="$1";D="$PROFILE_ROOT/$N";mkdir -p "$D";chmod 700 "$D";for F in $PROFILE_FILES;do [ -f "/etc/config/$F" ]&&cp "/etc/config/$F" "$D/$F";done;date +%s>"$D/saved_at";chmod 600 "$D"/* 2>/dev/null||true;}
-pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;echo "$M">/etc/mx4200/mode;ra;}
+pload(){ N="$1";D="$PROFILE_ROOT/$N";pex "$N"||return 1;for F in $PROFILE_FILES;do [ -f "$D/$F" ]&&cp "$D/$F" "/etc/config/$F";done;M="$N";[ "$N" = router-baseline ]&&M=router;if [ "$M" = repeater ]&&[ "$(uci -q get network.wan.proto)" = none ];then rwan||return 1;uci commit network||return 1;psave repeater;fi;echo "$M">/etc/mx4200/mode;ra;}
 mode(){ cat /etc/mx4200/mode 2>/dev/null||echo router;}
-savecur(){ M="$(mode)";case "$M" in router|wds|repeater)psave "$M";;esac;}
+savecur(){ M="$(mode)";case "$M" in router|wds|repeater|ap)psave "$M";;esac;}
+priority(){
+F=/etc/mx4200/auto-priority;P="$(awk -v m="$1" '$1==m{print $2}' "$F" 2>/dev/null)";printf 'Auto priority for %s (1-9, 0=off) [%s]: ' "$1" "${P:-0}"
+read -r V||return 1;V=${V:-${P:-0}};case "$V" in [0-9]);;*)return 1;;esac
+[ -f "$F" ]||:>"$F";grep -v "^$1 " "$F">"$F.new";[ "$V" = 0 ]||echo "$1 $V">>"$F.new";mv "$F.new" "$F";chmod 600 "$F";date +%s >/tmp/mxauto-manual
+}
 psum(){ N=$1;D=$PROFILE_ROOT/$N;pex $N||{ echo 'No profile';return;};echo "Profile: $N";I="$(uci -c "$D" -q get network.lan.ipaddr)";[ -n "$I" ]&&echo "LAN: $I";U="$(uci -c "$D" -q get wireless.mx_primary.ssid)";[ -n "$U" ]&&echo "Upstream: $U";}
 ws(){ ubus call network.wireless status 2>/dev/null;}
 ri(){ ws|jsonfilter -e "@.$1.interfaces[0].ifname" 2>/dev/null;}
@@ -112,6 +118,14 @@ cat > /root/mxr <<'EOF'
 . /usr/lib/mxc
 TARGET="$1"
 case "$TARGET" in wds|repeater);;*) exit 1;;esac
+date +%s >/tmp/mxauto-manual
+WAN_PORT=lan;WAN_PREF=wifi
+if [ "$TARGET" = repeater ];then
+while true;do printf 'WAN socket: 1=LAN port 2=wired WAN uplink [1]: ';read -r A||exit 1;case "$A" in ''|1)break;;2)WAN_PORT=wan;break;;esac;done
+if [ "$WAN_PORT" = wan ];then
+while true;do printf 'Uplink priority: 1=wired WAN 2=Wi-Fi repeater [2]: ';read -r A||exit 1;case "$A" in ''|2)break;;1)WAN_PREF=wan;break;;esac;done
+fi
+fi
 scan_band(){
 R=$1;L=$2;MATCH_SSID=${3:-};REUSE_PASS=${4:-};T=/tmp/mx4200-scan.$$
 echo;echo "Scanning $L..."
@@ -244,12 +258,14 @@ uci -q delete dhcp.mgmt
 fi
 uci -q delete network.usbwan
 if [ "$TARGET" = repeater ];then
-rwan || { echo 'Could not add WAN socket to LAN bridge'; exit 1; }
+if [ "$WAN_PORT" = lan ];then rwan||{ echo 'Could not add WAN socket to LAN bridge';exit 1; };else u network.wan.device='wan';u network.wan.proto='dhcp';uci -q delete network.wan6.disabled;fi
+u network.wan.mx_priority="$WAN_PREF"
 for X in wwanp wwanb;do u network.$X='interface';u network.$X.proto='dhcp';done
-u network.wwanp.metric='5';u network.wwanb.metric='15';u network.wan.metric='20';uci -q delete network.wdsp;uci -q delete network.wdsb
+u network.wwanp.metric='5';u network.wwanb.metric='15';[ "$WAN_PREF" = wan ]&&u network.wan.metric='3'||u network.wan.metric='20';uci -q delete network.wdsp;uci -q delete network.wdsb
 else
 u network.wan.device='wan'
 u network.wan.proto='dhcp'
+uci -q delete network.wan.mx_priority
 uci -q delete network.wan6.disabled
 for X in wdsp wdsb;do u network.$X='interface';u network.$X.proto='none';done
 uci -q delete network.wwanp;uci -q delete network.wwanb;u network.wan.metric='10'
@@ -272,6 +288,7 @@ fi
 ca
 echo "$TARGET" > /etc/mx4200/mode
 psave "$TARGET"
+priority "$TARGET"
 ra
 echo
 echo 'Applied; Wi-Fi may reconnect.'
@@ -287,6 +304,33 @@ echo "Mgmt IP: $R_LAN_IP"
 }
 EOF
 chmod 755 /root/mxr
+cat > /root/mxa <<'EOF'
+#!/bin/sh
+. /usr/lib/mxc
+date +%s >/tmp/mxauto-manual
+printf 'AP Wi-Fi name [%s]: ' "$WIFI_PREFIX";IFS= read -r Q||exit 1;Q=${Q:-$WIFI_PREFIX}
+[ "$(printf %s "$Q"|LC_ALL=C wc -c)" -le 21 ]||{ echo 'Name too long for -Management SSID';exit 1; }
+rs "Password for $Q Wi-Fi: ";P=$SECRET
+rs "Password for ${Q}-Management Wi-Fi: ";K=$SECRET
+for V in "$P" "$K";do [ "${#V}" -ge 8 ]&&[ "${#V}" -le 63 ]||{ echo 'Passwords must be 8-63 characters';exit 1; };done
+savecur;wifi_clear;rb
+B="$(ds br-lan)";[ -n "$B" ]||{ echo 'br-lan not found';exit 1; }
+uci -q delete "${B}.ports";for I in lan1 lan2 lan3;do uci add_list "${B}.ports=$I";done
+rwan||exit 1
+u network.lan='interface';u network.lan.device='br-lan';u network.lan.proto='dhcp';u network.lan.delegate='0'
+for I in ipaddr netmask gateway dns ip6assign ip6hint ip6class metric;do uci -q delete "network.lan.$I";done
+for I in wwanp wwanb wdsp wdsb usbwan br_mgmt mgmt;do uci -q delete "network.$I";done
+u dhcp.lan='dhcp';u dhcp.lan.interface='lan';u dhcp.lan.ignore='1';u dhcp.lan.ra='disabled';u dhcp.lan.dhcpv6='disabled';u dhcp.lan.ndp='disabled';uci -q delete dhcp.mgmt
+ap(){ S=$1;R=$2;u wireless.$S='wifi-iface';u wireless.$S.device="$R";u wireless.$S.mode='ap';u wireless.$S.network='lan';u wireless.$S.ssid="$Q";u wireless.$S.encryption='sae-mixed';u wireless.$S.key="$P";u wireless.$S.disabled='0';}
+ap mx_ap2 radio1;ap mx_ap5 radio0;ap mx_ap_high radio2
+u wireless.mx_mgmt='wifi-iface';u wireless.mx_mgmt.device='radio1';u wireless.mx_mgmt.mode='ap';u wireless.mx_mgmt.network='lan';u wireless.mx_mgmt.ssid="${Q}-Management";u wireless.mx_mgmt.encryption='sae-mixed';u wireless.mx_mgmt.key="$K";u wireless.mx_mgmt.disabled='0'
+dz mgmt;dz uplink;lz;df lan
+Z="$(zs wan)";[ -n "$Z" ]&&{ for I in lan wwanp wwanb usbwan;do uci -q del_list "${Z}.network=$I";done; }
+ca;echo ap >/etc/mx4200/mode;psave ap;priority ap;ra
+echo "Wired AP: all Ethernet ports are LAN; main router supplies DHCP."
+echo "Management SSID: ${Q}-Management"
+EOF
+chmod 755 /root/mxa
 cat > /usr/sbin/mxb <<'EOF'
 #!/bin/sh
 . /usr/lib/mxc
@@ -315,7 +359,7 @@ guard)
 A="$(cat /tmp/mx4200-backhaul-active 2>/dev/null||echo primary)";S=0;K=29;SCAN_PID=''
 trap '[ -z "$SCAN_PID" ] || kill "$SCAN_PID" 2>/dev/null' EXIT
 while sleep 1;do
-M="$(mode)";[ "$M" = router ]&&continue
+M="$(mode)";case "$M" in router|ap)continue;;esac
 P=0;B=0;up mx_primary&&P=1;up mx_backup&&B=1
 if [ "$M" = wds ];then
 D="$(uci -q get wireless.mx_primary.disabled)$(uci -q get wireless.mx_backup.disabled)"
@@ -366,7 +410,7 @@ return 1
 rmet() {
 M="$(mode)"
 case "$M" in
-repeater) uci -q set network.wwanp.metric='5';uci -q set network.wwanb.metric='15';uci set network.wan.metric='20';;
+repeater) uci -q set network.wwanp.metric='5';uci -q set network.wwanb.metric='15';[ "$(uci -q get network.wan.mx_priority)" = wan ]&&uci set network.wan.metric='3'||uci set network.wan.metric='20';;
 *) uci set network.wan.metric='10' ;;
 esac
 }
@@ -444,18 +488,10 @@ cat > /root/mxwds <<'EOF'
 #!/bin/sh
 . /usr/lib/mxc
 [ "$(mode)" = wds ] || { echo 'Not WDS mode'; exit 1; }
-IP="$(ip -4 addr show dev br-lan 2>/dev/null|awk '/inet /{print $2;exit}')"
-GW="$(ip -4 route show default dev br-lan 2>/dev/null|awk '/^default /{for(i=1;i<=NF;i++)if($i=="via"){print $(i+1);exit}}')"
-[ -n "$IP" ] && [ -n "$GW" ] || { echo 'WDS upstream DHCP: FAIL'; exit 1; }
-DNS="$(ubus call network.interface.lan status 2>/dev/null|jsonfilter -e '@.["dns-server"][*]' 2>/dev/null)"
-echo 'WDS upstream DHCP: PASS'
-echo "IP: $IP"
-echo "GW: $GW"
-echo "DNS: $DNS"
-SRC=${IP%%/*}
-printf 'Internet IP: '; ping -I br-lan -c 1 -W 2 "$DNS_FALLBACK_1" >/dev/null 2>&1 && echo PASS || echo FAIL
-printf 'Upstream DNS: '; OK=0; for D in $DNS; do dig -b "$SRC" +time=1 +tries=1 +short @"$D" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && { OK=1; break; }; done; [ "$OK" = 1 ] && echo PASS || echo FAIL
-printf 'Cloudflare DNS: '; dig -b "$SRC" +time=1 +tries=1 +short @"$DNS_FALLBACK_1" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && echo PASS || echo FAIL
+ip -4 addr show dev br-lan
+ip -4 route show default dev br-lan
+ubus call network.interface.lan status 2>/dev/null|jsonfilter -e 'DNS: @.["dns-server"][*]'
+printf 'WDS health: ';/usr/sbin/mxw
 EOF
 chmod 755 /root/mxwds
 cat > /usr/sbin/mxd <<'EOF'
@@ -495,36 +531,42 @@ chmod 755 /etc/init.d/mxd
 /etc/init.d/mxd enable
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
-MODULE_BASE_URL='https://github.com/geekymahar/linksys-openwrt-toolkit/raw/main/mx4200-v2/modules'
+. /etc/mx4200/base.conf
+MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules'
 LED_MODULE_PATH='led/rev3'
-LED_SHA256='a8ad0f7a7caf65320002f9b39f70c1a3472e6dc86d94445cd6cf10bf1743c510'
+LED_SHA256='f533eba3dacdb8b20e83bf8e550cdbb4ff0d1166d7145cc97edb3a088d16038d'
 LED_STATE='/etc/mx4200/modules/led.installed'
+AUTO_SHA256='f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de'
+AUTO_STATE='/etc/mx4200/modules/auto.installed'
 ready(){ [ -x /usr/bin/mxls ] && [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ] && [ "$(cat "$LED_STATE" 2>/dev/null)" = "$LED_SHA256" ]; }
+auto_ready(){ [ -x /usr/sbin/mxauto ] && [ "$(cat "$AUTO_STATE" 2>/dev/null)" = "$AUTO_SHA256" ]; }
 fetch(){
 if command -v uclient-fetch >/dev/null 2>&1 && uclient-fetch -q -T 15 -O "$2" "$1"; then return 0; fi
-if command -v wget >/dev/null 2>&1 && wget -q -T 15 -O "$2" "$1"; then return 0; fi
 if command -v curl >/dev/null 2>&1 && curl -fsSL --connect-timeout 5 --max-time 15 -o "$2" "$1"; then return 0; fi
 return 1
 }
-install_led(){
-ready && return 0
+install_module(){
+PATH_NAME="$1"; EXPECT="$2"; STATE="$3"
 command -v sha256sum >/dev/null 2>&1 || return 1
 mkdir -p /etc/mx4200/modules || return 1
-TMP="/tmp/mx-led-install.$$"; SUM="$TMP.sha256"
-fetch "$MODULE_BASE_URL/$LED_MODULE_PATH/install.sh.sha256" "$SUM" || { rm -f "$TMP" "$SUM"; return 1; }
+TMP="/tmp/mx-install.$$"; SUM="$TMP.sha256"
+fetch "$MODULE_BASE_URL/$PATH_NAME/install.sh.sha256" "$SUM" || { rm -f "$TMP" "$SUM"; return 1; }
 HASH="$(awk 'NR==1{print $1}' "$SUM")"
-[ "$HASH" = "$LED_SHA256" ] && fetch "$MODULE_BASE_URL/$LED_MODULE_PATH/install.sh" "$TMP" && [ "$(sha256sum "$TMP" | awk '{print $1}')" = "$LED_SHA256" ] && sh "$TMP"
+[ "$HASH" = "$EXPECT" ] && fetch "$MODULE_BASE_URL/$PATH_NAME/install.sh" "$TMP" && [ "$(sha256sum "$TMP" | awk '{print $1}')" = "$EXPECT" ] && sh "$TMP"
 RESULT=$?
 rm -f "$TMP" "$SUM"
 [ "$RESULT" = 0 ] || return 1
-printf '%s\n' "$LED_SHA256" > "$LED_STATE.new" && mv "$LED_STATE.new" "$LED_STATE"
-ready
+printf '%s\n' "$EXPECT" > "$STATE.new" && mv "$STATE.new" "$STATE"
 }
+install_led(){ ready || { install_module "$LED_MODULE_PATH" "$LED_SHA256" "$LED_STATE" && ready; }; }
+install_auto(){ auto_ready || { install_module auto "$AUTO_SHA256" "$AUTO_STATE" && auto_ready; }; }
 case "$1" in
 once) install_led ;;
-service) while ! ready; do install_led && { logger -t mxmod 'LED module installed'; exit 0; }; sleep 30; done ;;
+auto-once) install_auto ;;
+service) while true;do [ "$LED_AUTO_INSTALL" != 1 ] || ready || install_led;auto_ready || install_auto;{ [ "$LED_AUTO_INSTALL" != 1 ] || ready; } && auto_ready && exit 0;sleep 30;done ;;
 status) ready && { echo 'LED module installed'; exit 0; }; echo 'LED module pending'; exit 1 ;;
-*) echo 'mxmod: once|service|status'; exit 1 ;;
+auto-status) auto_ready && { echo 'Mode module installed'; exit 0; }; echo 'Mode module pending'; exit 1 ;;
+*) echo 'mxmod: once|auto-once|service|status|auto-status'; exit 1 ;;
 esac
 EOF
 chmod 755 /usr/sbin/mxmod
@@ -535,7 +577,7 @@ USE_PROCD=1
 start_service(){ procd_open_instance; procd_set_param command /usr/sbin/mxmod service; procd_close_instance; }
 EOF
 chmod 755 /etc/init.d/mxmod
-[ "$LED_AUTO_INSTALL" = 1 ] && /etc/init.d/mxmod enable || /etc/init.d/mxmod disable
+/etc/init.d/mxmod enable
 cat > /usr/sbin/mxm <<'EOF'
 #!/bin/sh
 . /usr/lib/mxc
@@ -544,6 +586,7 @@ uci -q get network.usbwan >/dev/null 2>&1 && { echo 'USB tether off...'; /usr/sb
 }
 sil(){
 TARGET="$1"
+date +%s >/tmp/mxauto-manual
 duo
 [ "$(mode)" != "$TARGET" ] && savecur
 }
@@ -558,9 +601,9 @@ echo
 echo '1=Previous 2=Baseline 0=Cancel';[ "$CUR" = router ]&&echo '3=Keep current'
 printf 'Choose: '; read -r C
 case "$C" in
-1) sil router; pload router || echo 'No router profile' ;;
-2) duo; [ "$CUR" = router ] && psave router; [ "$CUR" != router ] && savecur; pload router-baseline || echo 'No baseline' ;;
-3) [ "$CUR" = router ] && psave router ;;
+1) pex router && { sil router; priority router; pload router; } || echo 'No router profile' ;;
+2) duo; [ "$CUR" = router ] && psave router; [ "$CUR" != router ] && savecur; priority router; pload router-baseline || echo 'No baseline' ;;
+3) [ "$CUR" = router ] && { psave router; priority router; } ;;
 esac
 }
 pact(){
@@ -575,7 +618,7 @@ echo
 echo '1=Previous 2=New 0=Cancel'
 printf 'Choose: '; read -r A
 case "$A" in
-1) sil "$T"; pload "$T" ;;
+1) sil "$T"; priority "$T"; pload "$T" ;;
 2) exec /root/mxr "$T" ;;
 esac
 else
@@ -583,8 +626,20 @@ echo 'No profile.'
 exec /root/mxr "$T"
 fi
 }
+aact(){
+echo '1=Previous wired AP 2=New wired AP 3=Change Management password 0=Cancel'
+printf 'Choose: ';read -r C
+case "$C" in
+1) pex ap && { sil ap;priority ap;pload ap; } || echo 'No AP profile' ;;
+2) /root/mxa ;;
+3) [ "$(mode)" = ap ]||{ echo 'Wired AP mode required';return; }
+rs 'New Management Wi-Fi password: ';K=$SECRET
+[ "${#K}" -ge 8 ]&&[ "${#K}" -le 63 ]||{ echo 'Password must be 8-63 characters';return; }
+uci set wireless.mx_mgmt.key="$K";uci commit wireless;psave ap;wifi reload radio1;;
+esac
+}
 bact(){
-[ "$(mode)" = router ] && { echo 'Repeater required.'; return; }
+case "$(mode)" in wds|repeater);;*) echo 'Repeater required.';return;;esac
 echo '1=Auto 2=Primary 3=Backup 0=Cancel'
 printf 'Choose: ';read -r C
 case "$C" in 1) /usr/sbin/mxb auto;;2) /usr/sbin/mxb primary;;3) /usr/sbin/mxb backup;;esac
@@ -610,6 +665,7 @@ else
 for N in wwanp wwanb;do ubus call network.interface.$N status 2>/dev/null|jsonfilter -e "$N IPv4: @.[\"ipv4-address\"][0].address" 2>/dev/null;done
 ip -4 addr show br-lan 2>/dev/null | awk '/inet /{print "LAN: "$2}'
 fi
+[ "$MODE" = ap ]&&echo "Management SSID: $(uci -q get wireless.mx_mgmt.ssid)"
 echo
 [ -f /tmp/mx4200-led-state ] && { echo 'LED:'; cat /tmp/mx4200-led-state; }
 if [ -x /usr/bin/mxls ]; then /usr/bin/mxls detect 2>/dev/null | sed 's/^/  /'; else /usr/sbin/mxmod status; fi
@@ -637,15 +693,15 @@ while true; do
 echo
 echo '=== MX4200 ==='
 echo "Current mode: $(mode)"
-echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 0=Exit'
+echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 8=Wired-AP 0=Exit'
 printf 'Choose: '; read -r C
 case "$C" in
-1) ract;; 2) pact;; 3) /usr/sbin/mxu menu;; 4) bact;; 5) sact;; 6) /root/mxwds;; 7) lact;; 0) exit;;
+1) ract;; 2) pact;; 3) /usr/sbin/mxu menu;; 4) bact;; 5) sact;; 6) /root/mxwds;; 7) lact;; 8) aact;; 0) exit;;
 esac
 done
 }
 case "$1" in
-router) ract;; repeater) pact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; wdstest) /root/mxwds;;
+router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; wdstest) /root/mxwds;;
 help|-h|--help)
 echo 'mx          Interactive setup menu (start here)'
 echo 'mxstatus    Show mode, addresses, upstream route and LED status'
@@ -653,6 +709,9 @@ echo 'mxrouter    Restore router mode or a saved router profile'
 echo 'mxrepeater  Choose WDS or routed repeater; scan upstream Wi-Fi'
 echo '            2.4 GHz backup can reuse the 5 GHz SSID/password'
 echo '            Routed repeater makes the WAN socket a LAN port'
+echo '            Or use WAN as a wired uplink; choose WAN/Wi-Fi priority'
+echo 'mxap        Wired AP: all ports LAN, main-router DHCP, secured Management SSID'
+echo 'Auto modes: assign 1-9 when saving a mode; 0 disables. mxauto status lists them.'
 echo 'mxusb       Set USB tether as primary, backup or off'
 echo 'mxled       Install or control the optional LED module'
 echo 'In mx: 4    Set backhaul to auto, 5 GHz primary or 2.4 GHz backup'
@@ -667,6 +726,7 @@ cat > /etc/profile.d/mx <<'EOF'
 alias mxstatus='/usr/sbin/mxm status'
 alias mxrouter='/usr/sbin/mxm router'
 alias mxrepeater='/usr/sbin/mxm repeater'
+alias mxap='/usr/sbin/mxm ap'
 alias mxusb='/usr/sbin/mxm usb'
 alias mxled='/usr/sbin/mxm led'
 alias mxhelp='/usr/sbin/mxm help'
@@ -674,7 +734,7 @@ case "$-" in
 *i*)
 echo
 echo 'MX4200: run mx for guided router, repeater/WDS and USB setup.'
-echo 'Quick: mxstatus mxrouter mxrepeater mxusb mxled | mxhelp for usage'
+echo 'Quick: mxstatus mxrouter mxrepeater mxap mxusb mxled | mxhelp'
 ;;
 esac
 EOF
@@ -724,7 +784,7 @@ uci -q set tailscale.settings.fw_mode=nftables;uci -q commit tailscale
 for S in tailscale openvpn;do [ -x /etc/init.d/$S ]&&{ /etc/init.d/$S enable;/etc/init.d/$S start >/dev/null 2>&1||true;};done
 /etc/init.d/mxd start >/dev/null 2>&1 || true
 /etc/init.d/mxb start >/dev/null 2>&1 || true
-[ "$LED_AUTO_INSTALL" = 1 ] && /etc/init.d/mxmod start >/dev/null 2>&1 || true
+/etc/init.d/mxmod start >/dev/null 2>&1 || true
 if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1; then
 if fw_printenv auto_recovery >/dev/null 2>&1 && fw_printenv maxpartialboots >/dev/null 2>&1; then
 fw_setenv auto_recovery yes
@@ -732,7 +792,7 @@ fw_setenv maxpartialboots 3
 fi
 fi
 touch /etc/sysupgrade.conf
-for F in /etc/mx4200 /etc/sysctl.d/99-mx4200-vpn.conf /usr/lib/mxc /usr/sbin/mxm /usr/bin/mx /usr/sbin/mxb /etc/init.d/mxb /usr/sbin/mxu /usr/sbin/mxw /usr/sbin/mxd /etc/init.d/mxd /usr/sbin/mxmod /etc/init.d/mxmod /root/mxr /root/mxwds /etc/profile.d/mx /etc/profile.d/mx.sh;do grep -qxF "$F" /etc/sysupgrade.conf 2>/dev/null||echo "$F">>/etc/sysupgrade.conf;done
+for F in /etc/mx4200 /etc/sysctl.d/99-mx4200-vpn.conf /usr/lib/mxc /usr/sbin/mxm /usr/bin/mx /usr/sbin/mxb /etc/init.d/mxb /usr/sbin/mxu /usr/sbin/mxw /usr/sbin/mxd /etc/init.d/mxd /usr/sbin/mxmod /etc/init.d/mxmod /root/mxr /root/mxa /root/mxwds /etc/profile.d/mx /etc/profile.d/mx.sh;do grep -qxF "$F" /etc/sysupgrade.conf 2>/dev/null||echo "$F">>/etc/sysupgrade.conf;done
 logger -t mx 'V2 ready'
 sync
 exit 0
