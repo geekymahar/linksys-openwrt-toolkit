@@ -769,7 +769,7 @@ var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ]
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
 var zeroTierRpc = rpc.declare({ object: 'mx.ui', method: 'zerotier', params: [ 'action', 'network' ] });
 var dnsProxyRpc = rpc.declare({ object: 'mx.ui', method: 'dns_proxy', params: [ 'action', 'provider' ] });
-var names = { overview: 'Internet', setup: 'Set up Internet', priority: 'Mode Priority', internet: 'WAN Details', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', zerotier: 'ZeroTier', network: 'Network', security: 'Security', traffic: 'Traffic', applications: 'Applications', led: 'LED', logs: 'Logs', system: 'System', controls: 'Controls' };
+var names = { overview: 'Internet', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', network: 'Network', traffic: 'Flow Control', security: 'Security', applications: 'Applications', system: 'System', setup: 'Set up Internet', priority: 'Mode Priority', internet: 'WAN Details', zerotier: 'ZeroTier', led: 'LED', logs: 'Logs', controls: 'Controls' };
 var navIcons = { overview: '⌂', setup: '＋', priority: '⇅', internet: '↗', dns: '≋', wireless: '⌁', mesh: '⤭', clients: '◉', vpn: '⬡', zerotier: 'Z', network: '↔', security: '⛨', traffic: '▥', applications: '▦', led: '◐', logs: '≡', system: '⚙', controls: '⋯' };
 var loadError = false;
 function loadStylesheet() {
@@ -1080,7 +1080,7 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 @media(max-width:600px){.mx-global{padding:8px 12px;flex-wrap:wrap}.mx-global-brand{font-size:14px}.mx-global-actions{gap:3px;flex-wrap:wrap}.mx-global-actions .mx-chip{display:none}.mx-hero{grid-template-columns:1fr;gap:24px;text-align:center}.mx-hero-sources{order:2}.mx-hero-center{order:1}.mx-hero-clients{order:3;display:grid;text-align:left}.mx-hero-source{justify-content:center}.mx-hero-rule{max-width:45px}.mx-link-body{grid-template-columns:1fr}.mx-link-symbol{display:none}.mx-link-pairs .mx-kv{grid-template-columns:1fr 1fr}.mx-overview-content>.mx-grid{grid-template-columns:1fr}}
 @media(min-width:851px){.mx-side nav{max-height:calc(100vh - 110px);overflow-y:auto}}
 .mx-nav:before,.mx-nav.active:before{display:none!important}
-.mx-nav{letter-spacing:0;text-transform:none;font-weight:600}
+.mx-nav{letter-spacing:0;text-transform:uppercase;font-size:11px;font-weight:600}
 .mx-nav-icon{width:24px;height:24px;flex:none;display:grid;place-items:center;border:1px solid rgba(203,215,204,.4);border-radius:5px;color:#c8e36c;font:600 10px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
 .mx-nav.active .mx-nav-icon{background:#c8e36c;border-color:#c8e36c;color:#1d2924}
 .mx-nav-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -1100,12 +1100,13 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 .mx-overview-content{gap:16px;padding:18px 20px}
 .mx-overview-uplinks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;min-width:0}
 .mx-overview-uplinks>.mx-link-card{min-width:0}
-.mx-overview-uplinks .mx-link-body{grid-template-columns:minmax(0,1fr);padding:14px 18px}
+.mx-overview-uplinks .mx-link-body{grid-template-columns:minmax(0,1fr);padding:12px 16px}
+.mx-overview-uplinks .mx-card-head{padding:12px 16px}
 .mx-overview-uplinks .mx-link-symbol{display:none}
-.mx-overview-uplinks .mx-link-pairs .mx-kv{grid-template-columns:minmax(80px,40%) minmax(0,1fr);padding:7px 0}
+.mx-overview-uplinks .mx-link-pairs .mx-kv{grid-template-columns:minmax(75px,40%) minmax(0,1fr);gap:8px;padding:7px 0}
 .mx-overview-uplinks .mx-link-actions{justify-content:flex-start;padding-top:10px}
 .mx-overview-health .mx-card-body{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
-@media(max-width:1100px){.mx-overview-uplinks{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.mx-overview-uplinks{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.mx-overview-uplinks,.mx-overview-health .mx-card-body{grid-template-columns:1fr}}
 EOF_CSS
 touch /etc/sysupgrade.conf
