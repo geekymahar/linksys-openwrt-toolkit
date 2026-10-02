@@ -1,4 +1,9 @@
 #!/bin/sh
+if [ "$MX_REMOTE_PASS" != 1 ] && { [ -e /etc/mx4200/provisioned ] || [ -e /etc/mx4200/mode ]; };then
+[ -x /etc/init.d/mxmod ] && { /etc/init.d/mxmod disable; /etc/init.d/mxmod stop; }
+[ -x /etc/init.d/mxprovision ] && /etc/init.d/mxprovision disable
+exit 0
+fi
 WIFI_PREFIX='LS-MX4200v2'
 LED_AUTO_INSTALL='1'
 COUNTRY='GB'
@@ -529,54 +534,46 @@ cat > /etc/hotplug.d/iface/95-mxmgmt <<'EOF'
 EOF
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
-. /etc/mx4200/base.conf
-MODULE_BASE_URL='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules'
-LED_SHA256='651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44'
-AUTO_SHA256='f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de'
-SAMBA_SHA256='a46442f90917be5c2c267b6f6e69c99c1034580583af57fe18d885b0c7d2ce9a'
-UI_SHA256='1ef11b3cfcf6e1eb4326c5d883aa64a9617373f55eb7077606e11e12a09d52d0'
-select_module(){
+BASE='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules/provision'
+HASH='7c6f370cd16004e0a46798918c746fc45d895317b161cc87b4a146828537bd14'
 case "$1" in
-led) REL=led/rev3;HASH="$LED_SHA256";BIN=/usr/bin/mxls ;;
-auto) REL=auto;HASH="$AUTO_SHA256";BIN=/usr/sbin/mxauto ;;
-samba) REL=samba;HASH="$SAMBA_SHA256";BIN=/usr/libexec/rpcd/mx.samba ;;
-ui) REL=ui;HASH="$UI_SHA256";BIN=/usr/libexec/rpcd/mx.ui ;;
-*) return 1 ;;
+status|once) N=led;BIN=/usr/bin/mxls ;;
+auto-status|auto-once) N=auto;BIN=/usr/sbin/mxauto ;;
+samba-status|samba-once) N=samba;BIN=/usr/libexec/rpcd/mx.samba ;;
+ui-status|ui-once) N=ui;BIN=/usr/libexec/rpcd/mx.ui ;;
+provision) N=all ;;
+*) echo 'mxmod: provision|once|auto-once|samba-once|ui-once|status|auto-status|samba-status|ui-status';exit 1 ;;
 esac
-STATE="/etc/mx4200/modules/$1.installed"
-}
-ready(){ select_module "$1" && [ -x "$BIN" ] && [ "$(cat "$STATE" 2>/dev/null)" = "$HASH" ] || return 1;[ "$1" != led ] || { [ -x /usr/bin/mxld ] && [ -x /etc/init.d/mxl ]; }; }
-fetch(){
-uclient-fetch -q -T 15 -O "$2" "$1" 2>/dev/null || curl -fsSL --connect-timeout 5 --max-time 15 -o "$2" "$1" 2>/dev/null
-}
-install(){
-ready "$1" && return 0
-select_module "$1" || return 1
-mkdir -p /etc/mx4200/modules || return 1
-T="/tmp/mx-install.$$"; S="$T.sha256"
-fetch "$MODULE_BASE_URL/$REL/install.sh.sha256" "$S" && [ "$(awk 'NR==1{print $1}' "$S")" = "$HASH" ] && fetch "$MODULE_BASE_URL/$REL/install.sh" "$T" && [ "$(sha256sum "$T" | awk '{print $1}')" = "$HASH" ] && sh "$T"
-R=$?;rm -f "$T" "$S"
-[ "$R" = 0 ] && { printf '%s\n' "$HASH" > "$STATE.new" && mv "$STATE.new" "$STATE" && ready "$1"; }
-}
-case "$1" in
-once) install led ;;
-auto-once) install auto ;;
-samba-once) install samba ;;
-ui-once) install ui ;;
-service) while :;do DONE=1;for N in ui auto samba led;do [ "$N" = led ] && [ "$LED_AUTO_INSTALL" != 1 ] && continue;ready "$N" || { install "$N" || DONE=0; };done;[ "$DONE" = 1 ] && exit 0;sleep 30;done ;;
-status|auto-status|samba-status|ui-status) case "$1" in status) N=led;;auto-status) N=auto;;samba-status) N=samba;;*) N=ui;;esac;ready "$N" && { echo "$N installed"; exit 0; };echo "$N pending";exit 1 ;;
-*) echo 'mxmod: once|auto-once|samba-once|ui-once|service|status|auto-status|samba-status|ui-status'; exit 1 ;;
-esac
+case "$1" in *status) [ -x "$BIN" ] && [ -s "/etc/mx4200/modules/$N.installed" ] && { echo "$N installed";exit 0; };echo "$N pending";exit 1;;esac
+T=/tmp/mx-provision-installer.$$
+trap 'rm -f "$T"' EXIT HUP INT TERM
+uclient-fetch -q -T 15 -O "$T" "$BASE/install.sh" 2>/dev/null || curl -fsSL --connect-timeout 5 --max-time 15 -o "$T" "$BASE/install.sh" 2>/dev/null || exit 1
+[ "$(sha256sum "$T"|awk '{print $1}')" = "$HASH" ] && sh "$T" "$N"
 EOF
 chmod 755 /usr/sbin/mxmod
-cat > /etc/init.d/mxmod <<'EOF'
+cat > /usr/sbin/mxfirstboot <<'EOF'
+#!/bin/sh
+mkdir /etc/mx4200/provision-attempted 2>/dev/null||exit 0
+N=0;while [ "$N" -lt 30 ];do
+if [ "$(ubus call network.interface.wan status 2>/dev/null|jsonfilter -e '@.up' 2>/dev/null)" = true ];then
+[ -e /tmp/mxauto-manual ]&&exit 0
+[ "$(cat /etc/mx4200/mode 2>/dev/null)" = router ]||exit 0
+for F in network wireless dhcp firewall system;do cmp -s "/etc/config/$F" "/etc/mx4200/profiles/router-baseline/$F"||exit 0;done
+/usr/sbin/mxmod provision||logger -t mxprovision incomplete
+exit 0
+fi
+sleep 2
+N=$((N+1))
+done
+EOF
+chmod 755 /usr/sbin/mxfirstboot
+cat > /etc/init.d/mxprovision <<'EOF'
 #!/bin/sh /etc/rc.common
 START=99
 USE_PROCD=1
-start_service(){ procd_open_instance; procd_set_param command /usr/sbin/mxmod service; procd_close_instance; }
+start_service(){ procd_open_instance;procd_set_param command /usr/sbin/mxfirstboot;procd_close_instance; }
 EOF
-chmod 755 /etc/init.d/mxmod
-/etc/init.d/mxmod enable
+chmod 755 /etc/init.d/mxprovision
 cat > /usr/sbin/mxm <<'EOF'
 #!/bin/sh
 . /usr/lib/mxc
@@ -672,7 +669,7 @@ uci -q get network.usbwan >/dev/null 2>&1 && { echo; ubus call network.interface
 }
 lact(){
 if ! /usr/sbin/mxmod status >/dev/null; then
-if [ "$LED_AUTO_INSTALL" = 1 ]; then echo 'LED module pending; automatic installation is waiting for Internet access.'; else echo 'LED automatic installation is disabled in this firmware.'; fi
+echo 'LED module not installed. Automatic fetch runs only on a clean first boot.'
 echo '1=Install now 0=Cancel'
 printf 'Choose: '; read -r C
 [ "$C" = 1 ] && { /usr/sbin/mxmod once && echo 'LED module installed.' || echo 'LED module download unavailable.'; }
@@ -764,9 +761,12 @@ psave router-baseline
 if uci -q get uhttpd.main >/dev/null 2>&1; then u uhttpd.main.redirect_https=1; uci commit uhttpd; fi
 uci -q set tailscale.settings.fw_mode=nftables;uci -q commit tailscale
 for S in tailscale openvpn;do [ -x /etc/init.d/$S ]&&{ /etc/init.d/$S enable;/etc/init.d/$S start >/dev/null 2>&1||true;};done
+touch /etc/mx4200/provisioned
+if [ "$MX_REMOTE_PASS" != 1 ];then
+/etc/init.d/mxprovision start
+fi
 /etc/init.d/mxd start >/dev/null 2>&1 || true
 /etc/init.d/mxb start >/dev/null 2>&1 || true
-/etc/init.d/mxmod start >/dev/null 2>&1 || true
 if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1; then
 if fw_printenv auto_recovery >/dev/null 2>&1 && fw_printenv maxpartialboots >/dev/null 2>&1; then
 fw_setenv auto_recovery yes

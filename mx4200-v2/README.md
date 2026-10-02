@@ -2,7 +2,7 @@
 
 This directory defines the MX4200 V2/P2 OpenWrt firmware setup. The two configuration inputs are [`uci-defaults.sh`](uci-defaults.sh) and [`packages.txt`](packages.txt). This document describes what the current files actually configure; the shell files are the source of truth if behavior changes.
 
-The firmware builder runs `uci-defaults.sh` on the router's first boot. It writes local scripts, configures OpenWrt through UCI, saves an initial router profile, and starts the local services. The core networking functions do not fetch code from the Internet. Four optional installers are downloaded from this repository when connectivity becomes available: automatic switching **between** saved modes, the advanced LED controller, a LuCI Samba user page, and a LuCI MX manager. Once installed, their runtime files are local and do not need GitHub on later boots.
+The firmware builder runs `uci-defaults.sh` on a clean first boot. It writes local scripts, configures OpenWrt through UCI, and saves an initial router profile. The offline core works even when GitHub is unavailable. During that same first boot only, a verified release may replace the pristine baseline and install the automatic saved-mode switcher, advanced LED controller, LuCI Samba user page, and MX dashboard. Later normal boots never fetch modules automatically. A factory reset erases the overlay and opens a new first-boot provisioning opportunity; a reboot does not.
 
 ## Repository and installed files
 
@@ -10,6 +10,8 @@ The firmware builder runs `uci-defaults.sh` on the router's first boot. It write
 | --- | --- |
 | `uci-defaults.sh` | First-boot configuration and all generated core scripts. Firmware selector limit: **40,960 bytes**. |
 | `packages.txt` | Space-separated firmware package selection. |
+| `modules/provision/install.sh` and `.sha256` | Firmware-pinned first-boot release verifier and manual module installer. |
+| `release/manifest.txt`, `.sig`, and `build.py` | Signed release index and local release preparation tool. |
 | `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer. |
 | `modules/samba/install.sh` and `.sha256` | Optional LuCI Samba account manager installer. |
 | `modules/ui/install.sh` and `.sha256` | Optional LuCI MX dashboard and manager installer. |
@@ -32,7 +34,8 @@ The first-boot script creates these notable router paths:
 | `/usr/sbin/mxw`, `/root/mxwds` | WDS health check and diagnostic output. |
 | `/usr/sbin/mxd`, `/etc/init.d/mxd` | DNS fallback, Tailscale settings, and management-subnet overlap check. |
 | `/etc/hotplug.d/iface/95-mxmgmt` | Rechecks the management address when upstream LAN DHCP comes up or changes. |
-| `/usr/sbin/mxmod`, `/etc/init.d/mxmod` | Optional-module download, verification, installation, and retry. |
+| `/usr/sbin/mxfirstboot`, `/etc/init.d/mxprovision` | One-shot background release check, started on first boot and never enabled for later boots. |
+| `/usr/sbin/mxmod` | Verified release handoff and explicitly requested module installs. No recurring downloader. |
 | `/etc/profile.d/mx` | SSH aliases and short login guide. |
 
 The selected LED installer adds `/etc/mx4200/led.conf`, `/usr/bin/mxls`, `/usr/bin/mxld`, and `/etc/init.d/mxl`. The automatic-mode installer adds `/usr/sbin/mxauto` and `/etc/init.d/mxauto`. The Samba installer adds a LuCI page, a narrowly scoped rpcd method, and `/etc/mx4200/samba-users/` for its account registry. The MX manager installer adds a separate LuCI page and narrowly scoped rpcd method. Generated files are listed in `/etc/sysupgrade.conf`; each optional installer adds its own files there after installation.
@@ -121,23 +124,23 @@ The router/routed-repeater firewall configures LAN-to-WAN forwarding and masquer
 
 The image includes Tailscale, WireGuard, and OpenVPN tools and LuCI apps. First boot creates VPN/Tailscale firewall zones, enables IPv4/IPv6 forwarding, opens WAN TCP/UDP ports `1194`, `51820`, and `41641`, sets Tailscale's firewall mode to `nftables`, and starts Tailscale/OpenVPN init services when present. Once Tailscale reports `Running`, `mxd` tries to advertise this router as an exit node and accept routes, once per boot. The script does **not** create a Tailscale login, WireGuard peer/key, or OpenVPN client/server configuration; those still need their normal setup.
 
-## Optional module bootstrap
+## One-time release provisioning
 
-`mxmod` uses `uclient-fetch` first and `curl` as a fallback; **Git is not installed or used**. It downloads each installer's `.sha256` file and `install.sh` from `MODULE_BASE_URL`, checks the published hash against a digest embedded in `uci-defaults.sh`, then checks the installer bytes before executing them. The board-name check inside each installer limits installation to MX4200 V2/P2. Install success is recorded in `/etc/mx4200/modules/`.
-
-The base URL follows the repository's `main` branch under `mx4200-v2/modules/` in `geekymahar/linksys-openwrt-toolkit`:
+`uci-defaults.sh` configures the fully functional offline core first. On a clean first boot it launches a one-shot background worker, then lets boot continue; module downloads do not hold up DHCP, Wi-Fi, firewall, or the `mx` menu. The worker creates an atomic `/etc/mx4200/provision-attempted` marker and waits up to one minute for wired WAN DHCP. Immediately before fetching, it checks that the router is still on its untouched baseline. Its init service is started once and never enabled for later boots. Connect the WAN socket to an Internet-connected Ethernet network **before powering on after a flash or factory reset** if you want automatic provisioning. Wi-Fi repeater credentials have not been entered yet at this point. The worker fetches `modules/provision/install.sh` using `uclient-fetch` or `curl`; its expected SHA-256 is embedded in the firmware. Git is not installed. The provisioner then downloads `release/manifest.txt` and its Ed25519 signature, verifies them with its embedded public key and `openssl-util`, and checks the hash and shell syntax of the selected release files. The URL follows the actual `main/mx4200-v2/` directory:
 
 ```text
-https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules
+https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2
 ```
 
-The selected installers are `auto/install.sh` (expected SHA-256 `f0db8023a35f9beed3b5334c38ad744ca6221b2b1e94a26aaf595b97e0ea92de`), `led/rev3/install.sh` (expected SHA-256 `651da2d2967ce54477d54860f4567aa31b239e6ce26be3c3faf98fd542075d44`), `samba/install.sh`, and `ui/install.sh` (their expected SHA-256 values are recorded in `uci-defaults.sh`). Their embedded digests keep each installer fixed even though the URL follows `main`. Updating an installer requires updating its `.sha256` and the embedded digest in a new firmware build.
+For the automatic first-boot action, the signed manifest covers `uci-defaults.sh` plus the `auto`, `samba`, `ui`, and selected `led/rev3` installers. The worker and provisioner refuse the automatic update once an MX setup has started, and the provisioner checks that the five live UCI files still match the untouched router baseline before applying the downloaded core. It backs up that pristine core and restores it if the downloaded core reports failure. It runs the new core with a one-pass flag, then installs the optional modules locally. A changed mode or UCI file cancels the automatic release instead of overwriting a user's setup. Failure to reach GitHub or verify a release leaves the already installed offline core usable. The automatic attempt is not retried on later boots. `mxmod once`, `auto-once`, `samba-once`, and `ui-once` remain **explicit manual** install actions and verify the signed manifest without rerunning the core.
 
-With `LED_AUTO_INSTALL='1'`, the `mxmod` init service retries any missing LED, automatic-mode, Samba, and MX UI installers every 30 seconds until they are installed. The automatic-mode, Samba, and MX UI installers are attempted regardless of that LED setting. A successful verified fetch acts as the Internet check; a failed fetch simply retries. If Internet is unavailable, core routing, DHCP, Wi-Fi, firewall, USB, the SSH `mx` menu, and manual saved-profile selection remain available. The optional features run from locally installed files on subsequent boots. `mxled` also offers an immediate LED install attempt without requiring you to run a download command.
+`/etc/mx4200/provisioned` marks an installed configuration. A preserved-settings sysupgrade sees that marker, or the existing mode file from earlier MX firmware, and exits without resetting network settings. It also disables the older recurring `mxmod` service if present. A factory reset removes the marker and saved settings, so first-boot provisioning can run again against the same flashed image. Resetting does not install packages absent from that image; package/kernel changes still require a new build. A normal reboot keeps the installed files and never checks GitHub. If power is lost before the one-shot worker finishes, the attempt marker still prevents a retry on the next boot.
+
+The public signing key is frozen into `modules/provision/install.sh`, whose SHA-256 is frozen into the firmware. To publish a new release, edit the core/modules, then run `python3 release/build.py --key /Users/toukanlabs/.config/mx4200-v2/release-key.pem` from this directory. The tool refreshes module `.sha256` files, updates the firmware's provisioner hash, validates shell syntax and the 40,960-byte limit, creates the manifest, and signs it. **Keep the private key out of GitHub**; it exists only at that local path. Do not change the provisioner file at the `main` URL without rebuilding firmware already pinned to its old hash. Publish the manifest, signature, and matching scripts in one commit. A router must be factory-reset to automatically take that release; manual module installs can fetch a signed module later without changing its network setup.
 
 ### LuCI MX manager and browser terminal
 
-On first boot, normal LuCI is available without the UI module. When a working uplink allows the pinned module to download and verify, it installs locally; no GitHub connection is needed on later boots. After installation, sign out of LuCI and back in. **MX Dashboard** becomes the first page after login. In **Advanced settings**, **Open in LuCI** opens the ordinary LuCI status page in a new tab; its menus and settings remain available. Both views read and change the same live OpenWrt configuration. Dashboard changes appear in regular LuCI after its page is refreshed, and changes made in regular LuCI appear in the dashboard after its refresh. The dashboard follows the MX router's own capabilities rather than implementing GL.iNet-only services.
+On first boot, normal LuCI is available without the UI module. If the one-time signed release handoff succeeds, the dashboard installs locally; no GitHub connection is needed on later boots. If the handoff is unavailable, normal LuCI remains available and the dashboard can be installed explicitly with `mxmod ui-once` once Internet is available. After installation, sign out of LuCI and back in. **MX Dashboard** becomes the first page after login. In **Advanced settings**, **Open in LuCI** opens the ordinary LuCI status page in a new tab; its menus and settings remain available. Both views read and change the same live OpenWrt configuration. Dashboard changes appear in regular LuCI after its page is refreshed, and changes made in regular LuCI appear in the dashboard after its refresh. The dashboard follows the MX router's own capabilities rather than implementing GL.iNet-only services.
 
 The sidebar shows an overview, native setup, uplink status with IP/DNS/BSSID/signal/byte counters, saved-mode priorities, Wi-Fi SSIDs and backhaul, local DHCP clients, VPN status, LED controls, system and kernel logs, device health, and MX actions. The Internet probe checks two configured IPs; a failed ping is not proof that all Internet traffic is down. The Clients page lists leases issued by this router, so clients using upstream DHCP in wired AP or WDS mode may not appear. The Internet page presents the existing priority-based failover/failback; it does not claim to load-balance traffic or invent a second Ethernet WAN. The Wireless and Setup pages scan radio2 (5 GHz) and radio1 (2.4 GHz) through the offline core scanner, which excludes the MX4200's own BSSIDs. Scanning may briefly affect an active backhaul.
 
@@ -191,7 +194,7 @@ For direct hardware diagnosis after installation, `/usr/bin/mxls detect` reports
 
 ## Packages and offline dependencies
 
-`packages.txt` preinstalls network, Wi-Fi, firewall, USB, VPN, management, and LED hardware support in the firmware. Relevant examples are `wpad-mbedtls` for the full WPA/WPA3/STA/WDS feature set; `ip-full`, `netifd`, `dnsmasq`, `firewall4`, `iw`, `iwinfo`, and `jsonfilter` for the core; USB network drivers; `tailscale`, `wireguard-tools`, `openvpn-openssl`, and `bind-dig`; `uclient-fetch` and `curl` for verified optional installers; and I²C/LED drivers and `i2c-tools` for the advanced LED module. `wpad-basic-mbedtls` and Git are not selected.
+`packages.txt` preinstalls network, Wi-Fi, firewall, USB, VPN, management, and LED hardware support in the firmware. Relevant examples are `wpad-mbedtls` for the full WPA/WPA3/STA/WDS feature set; `ip-full`, `netifd`, `dnsmasq`, `firewall4`, `iw`, `iwinfo`, and `jsonfilter` for the core; USB network drivers; `tailscale`, `wireguard-tools`, `openvpn-openssl`, and `bind-dig`; `uclient-fetch` and `curl` for verified optional installers; `openssl-util` for Ed25519 release verification; and I²C/LED drivers and `i2c-tools` for the advanced LED module. `wpad-basic-mbedtls` and Git are not selected.
 
 The package list also contains optional OpenWrt/LuCI tools such as SQM, DDNS, adblock, Samba, traffic statistics, mwan3, travelmate, and relayd. `shadow-useradd` and `shadow-userdel` support the optional Samba account page; `luci-app-ttyd` supplies the browser terminal. Package presence does not mean the core script configures Samba shares. The LED dependencies can be present before the LED software is downloaded.
 
@@ -199,7 +202,7 @@ The package list also contains optional OpenWrt/LuCI tools such as SQM, DDNS, ad
 
 If `fw_printenv`/`fw_setenv` are available and the existing boot environment exposes both `auto_recovery` and `maxpartialboots`, first boot sets `auto_recovery=yes` and `maxpartialboots=3`. This prepares the Linksys recovery behavior; it does not force a partition switch or prove that both images are healthy. `luci-app-advanced-reboot` is included in the package list.
 
-Profiles, module files, local helper scripts, and configuration paths are added to `/etc/sysupgrade.conf`. Whether an individual firmware upgrade preserves them also depends on the chosen sysupgrade settings. On a clean flash, the first-boot script recreates the initial router configuration and its baseline profile.
+Profiles, module files, local helper scripts, and configuration paths are added to `/etc/sysupgrade.conf`. Whether an individual firmware upgrade preserves them also depends on the chosen sysupgrade settings. On a clean flash or factory reset, the first-boot script recreates the initial router configuration and its baseline profile. An upgrade that preserves settings skips this destructive setup.
 
 ## SSH command reference
 
@@ -224,4 +227,4 @@ The short names except `mx` are shell aliases loaded through `/etc/profile.d/mx`
 
 ## Scope of validation
 
-This documentation is based on the current checked-in module sources and the local `uci-defaults.sh` working copy. Shell syntax, module hashes, package presence, and management-overlap logic have been checked locally. Actual WDS interoperability, DFS timing, WAN/USB failover, LED colors, and recovery behavior require tests on an MX4200 V2/P2 with the intended upstream equipment.
+This documentation is based on the current checked-in MX4200 V2/P2 sources. The release signature, hashes, shell syntax, package presence, and first-boot guards can be checked locally. The live first-boot network timing, WDS interoperability, DFS timing, WAN/USB failover, LED colors, and recovery behavior still require tests on an MX4200 V2/P2.
