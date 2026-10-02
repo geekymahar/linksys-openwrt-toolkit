@@ -494,7 +494,6 @@ cat > /usr/share/luci/menu.d/mx-ui.json <<'EOF_MENU'
   "admin/mx4200": {
     "title": "MX Dashboard",
     "order": 1,
-    "css": "mx4200/dashboard.css",
     "action": { "type": "view", "path": "mx4200/dashboard" },
     "depends": { "acl": [ "mx-ui" ] }
   },
@@ -606,6 +605,24 @@ var setupStatus = rpc.declare({ object: 'mx.ui', method: 'setup_status' });
 var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ] });
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
 var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', wireless: 'Wireless', clients: 'Clients', vpn: 'VPN', led: 'LED', logs: 'Logs', system: 'Advanced settings', controls: 'Controls' };
+var stylesheetPromise;
+
+function loadStylesheet() {
+	if (stylesheetPromise) return stylesheetPromise;
+	stylesheetPromise = new Promise(function(resolve, reject) {
+		var link = document.createElement('link');
+		link.rel = 'stylesheet';
+		link.href = L.resource('mx4200/dashboard.css') + '?v=2';
+		link.onload = resolve;
+		link.onerror = function() {
+			stylesheetPromise = null;
+			link.remove();
+			reject(new Error('MX dashboard stylesheet could not be loaded'));
+		};
+		document.head.appendChild(link);
+	});
+	return stylesheetPromise;
+}
 
 function value(v, fallback) { return v === undefined || v === null || v === '' ? (fallback || '—') : String(v); }
 function chip(label, state) { return E('span', { 'class': 'mx-chip ' + (state || '') }, label); }
@@ -625,7 +642,7 @@ function regularLuciLink() { return E('a', { 'class': 'mx-btn primary', 'href': 
 function logoutLink() { return E('a', { 'class': 'mx-btn', 'href': L.url('admin/logout') }, _('Log out')); }
 
 return view.extend({
-	load: function() { return Promise.all([ overview(), profiles() ]); },
+	load: function() { return loadStylesheet().then(function() { return Promise.all([ overview(), profiles() ]); }); },
 	render: function(initial) {
 		var data = initial[0] || {}, saved = initial[1] || {}, selected = 'overview', busy = false;
 		var scans = { radio1: {}, radio2: {} }, logSource = 'system';
@@ -792,7 +809,7 @@ return view.extend({
 EOF_DASH
 mkdir -p /www/luci-static/resources/mx4200
 cat > /www/luci-static/resources/mx4200/dashboard.css <<'EOF_CSS'
-body[data-page="admin-mx4200"]{padding:0!important;margin:0!important;background:#eef0f7}body[data-page="admin-mx4200"]>header,body[data-page="admin-mx4200"]>footer,body[data-page="admin-mx4200"] #tabmenu{display:none!important}body[data-page="admin-mx4200"] #maincontent.container{width:100%;max-width:none;margin:0;padding:0}body[data-page="admin-mx4200"] .mx-dashboard{min-height:100vh;border-radius:0;box-shadow:none}
+body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f7}body:has(.mx-dashboard)>header,body:has(.mx-dashboard)>footer,body:has(.mx-dashboard) #tabmenu{display:none!important}body:has(.mx-dashboard) #maincontent{width:100%;max-width:none;margin:0;padding:0}body:has(.mx-dashboard) .mx-dashboard{min-height:100vh;border-radius:0;box-shadow:none}
 .mx-dashboard{--mx-ink:#252b52;--mx-muted:#68708c;--mx-cyan:#00b9cd;--mx-blue:#5672ed;--mx-card:#fff;--mx-bg:#eef0f7;--mx-line:#dfe3ee;color:var(--mx-ink);background:var(--mx-bg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:calc(100vh - 8rem);border-radius:14px;overflow:hidden;display:grid;grid-template-columns:205px minmax(0,1fr);box-shadow:0 12px 35px rgba(16,22,58,.12)}
 .mx-dashboard *{box-sizing:border-box}.mx-dashboard a{color:#3061d4}.mx-dashboard button{cursor:pointer;font:inherit}.mx-dashboard h2,.mx-dashboard h3,.mx-dashboard h4,.mx-dashboard p{margin:0}.mx-dashboard h2{font-size:23px}.mx-dashboard h3{font-size:17px}.mx-dashboard h4{font-size:14px}
 .mx-side{background:#13172d;color:#dce3f8;padding:22px 13px;display:flex;flex-direction:column;gap:22px}.mx-brand{font-weight:750;font-size:17px;letter-spacing:.025em;padding:0 13px}.mx-brand small{display:block;font-size:11px;font-weight:500;color:#8e99bc;letter-spacing:.08em;margin-top:3px}.mx-side nav{display:flex;flex-direction:column;gap:4px}.mx-nav{border:0;background:transparent;color:#c8d0e8;text-align:left;border-radius:9px;padding:11px 13px;width:100%;display:flex;align-items:center;gap:11px}.mx-nav:hover,.mx-nav.active{background:#242b4a;color:#fff}.mx-nav.active:before{content:"";width:5px;height:20px;background:var(--mx-cyan);border-radius:4px;margin-left:-13px;margin-right:8px}.mx-side-note{font-size:11px;color:#9aa5c6;padding:0 13px;margin-top:auto}
