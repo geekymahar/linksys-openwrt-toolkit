@@ -870,10 +870,13 @@ return view.extend({
 			var mtotal = Number(data.memory_total) || 0, mavail = Number(data.memory_available) || 0;
 			var temp = Number(data.temperature) || 0;
 			return [ overviewHero(), E('div', { 'class': 'mx-overview-content' }, [
-				overviewLinkCard(_('Ethernet WAN'), wan, 'ethernet', _('Configure Internet'), openSetup),
-				overviewLinkCard(_('5 GHz repeater · radio2'), primary, 'wifi', _('Choose Wi-Fi network'), openSetup),
-				E('div', { 'class': 'mx-grid' }, [ overviewLinkCard(_('2.4 GHz backup · radio1'), backup, 'wifi', _('Backhaul settings'), function() { selected = 'wireless'; draw(); }), overviewLinkCard(_('USB tethering'), usb, 'usb', _('USB controls'), function() { selected = 'controls'; draw(); }) ]),
-				E('div', { 'class': 'mx-grid' }, [ card(_('Router health'), [ pair(_('Uptime'), formatUptime(data.uptime)), pair(_('CPU load · 1 / 5 / 15 min'), data.load), pair(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—'), pair(_('LED'), data.led_state) ]), card(_('Memory and access'), [ usage(_('Memory used'), mtotal - mavail, mtotal), pair(_('Mode'), data.mode), pair(_('OpenWrt'), data.release), E('div', { 'class': 'mx-space' }), regularLuciLink() ]) ])
+                overviewLinkCard(_('Ethernet WAN'), wan, 'ethernet', _('Configure Internet'), openSetup),
+                E('div', { 'class': 'mx-overview-uplinks' }, [
+                    overviewLinkCard(_('5 GHz repeater · radio2'), primary, 'wifi', _('Choose network'), openSetup),
+                    overviewLinkCard(_('2.4 GHz backup · radio1'), backup, 'wifi', _('Backhaul settings'), function() { selected = 'wireless'; draw(); }),
+                    overviewLinkCard(_('USB tethering'), usb, 'usb', _('USB controls'), function() { selected = 'controls'; draw(); })
+                ]),
+                E('div', { 'class': 'mx-grid mx-overview-health' }, [ card(_('Router health'), [ pair(_('Uptime'), formatUptime(data.uptime)), pair(_('CPU load · 1 / 5 / 15 min'), data.load), pair(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—'), pair(_('LED'), data.led_state) ]), card(_('Memory and access'), [ usage(_('Memory used'), mtotal - mavail, mtotal), pair(_('Mode'), data.mode), pair(_('OpenWrt'), data.release), regularLuciLink() ]) ])
 			]) ];
 		}
 		function setupRow(label, control, hint) { return E('div', { 'class': 'mx-form-row' }, [ E('label', {}, label), E('div', {}, [ control, hint ? E('small', { 'class': 'mx-muted' }, hint) : '' ]) ]); }
@@ -1094,6 +1097,16 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 .mx-btn:hover .mx-btn-sheen,.mx-btn:focus-visible .mx-btn-sheen{transform:scaleX(1)}
 .mx-btn:active{transform:translateY(1px)}
 @media(prefers-reduced-motion:reduce){.mx-btn,.mx-btn-sheen{transition:none}}
+.mx-overview-content{gap:16px;padding:18px 20px}
+.mx-overview-uplinks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;min-width:0}
+.mx-overview-uplinks>.mx-link-card{min-width:0}
+.mx-overview-uplinks .mx-link-body{grid-template-columns:minmax(0,1fr);padding:14px 18px}
+.mx-overview-uplinks .mx-link-symbol{display:none}
+.mx-overview-uplinks .mx-link-pairs .mx-kv{grid-template-columns:minmax(80px,40%) minmax(0,1fr);padding:7px 0}
+.mx-overview-uplinks .mx-link-actions{justify-content:flex-start;padding-top:10px}
+.mx-overview-health .mx-card-body{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+@media(max-width:1100px){.mx-overview-uplinks{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.mx-overview-uplinks,.mx-overview-health .mx-card-body{grid-template-columns:1fr}}
 EOF_CSS
 touch /etc/sysupgrade.conf
 for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
