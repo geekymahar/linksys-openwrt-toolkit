@@ -60,7 +60,7 @@ wifi_link(){
     return 1
 }
 case "$1" in
-list) printf '{"status":{},"profiles":{},"overview":{},"logs":{"source":""},"scan_status":{"band":""},"setup":{"config":{}},"setup_status":{},"action":{"name":""},"priority":{"mode":"","value":0}}\n';exit 0 ;;
+list) printf '{"status":{},"profiles":{},"overview":{},"logs":{"source":""},"scan_status":{"band":""},"setup":{"config":{}},"setup_status":{},"action":{"name":""},"priority":{"mode":"","value":0},"zerotier":{"action":"","network":""}}\n';exit 0 ;;
 call) ;;
 *) exit 1 ;;
 esac
@@ -130,6 +130,42 @@ overview)
     fi
     json_close_array
     json_add_int client_count "$COUNT"
+    json_add_array wireless_clients
+    WIRELESS_COUNT=0;TAB=$(printf '\t')
+    for R in radio0 radio1 radio2;do
+        for INDEX in 0 1 2 3;do
+            SECTION=$(field "$WIRELESS" "@.$R.interfaces[$INDEX].section")
+            [ "$(uci -q get "wireless.$SECTION.mode")" = ap ] || continue
+            IFACE=$(field "$WIRELESS" "@.$R.interfaces[$INDEX].ifname")
+            [ -n "$IFACE" ] || continue
+            STATIONS=$(iw dev "$IFACE" station dump 2>/dev/null | awk -v r="$R" '
+                /^Station / { mac=$2; signal=""; rx=0; tx=0; next }
+                /signal:/ { signal=$2 }
+                /rx bytes:/ { rx=$3 }
+                /tx bytes:/ { tx=$3; if(mac!="") { printf "%s\t%s\t%s\t%s\t%s\n", r, mac, signal, rx, tx; mac="" } }
+            ')
+            while IFS="$TAB" read -r RADIO MAC SIGNAL RX TX;do
+                [ -n "$MAC" ] || continue
+                [ "$WIRELESS_COUNT" -lt 128 ] || break
+                CLIENT_IP='';CLIENT_NAME=''
+                if [ -r /tmp/dhcp.leases ];then
+                    while read -r EXP LEASE_MAC LEASE_IP LEASE_NAME _;do
+                        [ "$(printf '%s' "$LEASE_MAC" | tr 'A-F' 'a-f')" = "$(printf '%s' "$MAC" | tr 'A-F' 'a-f')" ] && { CLIENT_IP=$LEASE_IP;CLIENT_NAME=$LEASE_NAME;break; }
+                    done < /tmp/dhcp.leases
+                fi
+                json_add_object ''
+                json_add_string radio "$RADIO";json_add_string mac "$MAC"
+                json_add_string signal "$SIGNAL";json_add_string address "$CLIENT_IP"
+                json_add_string name "$CLIENT_NAME"
+                json_add_int rx_bytes "$RX";json_add_int tx_bytes "$TX"
+                json_close_object;WIRELESS_COUNT=$((WIRELESS_COUNT+1))
+            done <<EOF_STATIONS
+$STATIONS
+EOF_STATIONS
+        done
+    done
+    json_close_array
+    json_add_int wireless_client_count "$WIRELESS_COUNT"
     json_dump;exit 0 ;;
 logs)
     SOURCE=$(cat | jsonfilter -e '@.source' 2>/dev/null)
@@ -174,7 +210,7 @@ profiles)
         json_close_object
     done
     json_close_object;json_dump;exit 0 ;;
-action|priority) ;;
+action|priority|zerotier) ;;
 *) reply 0 'Unsupported method';exit 0 ;;
 esac
 REQUEST=$(cat)
@@ -191,6 +227,57 @@ if [ "$2" = priority ]; then
     chmod 600 "$PRIORITIES.new";mv "$PRIORITIES.new" "$PRIORITIES"
     date +%s > /tmp/mxauto-manual
     reply 1 'Priority saved';exit 0
+fi
+if [ "$2" = zerotier ];then
+    ZT_ACTION=$(printf '%s' "$REQUEST" | jsonfilter -e '@.action' 2>/dev/null)
+    ZT_NETWORK=$(printf '%s' "$REQUEST" | jsonfilter -e '@.network' 2>/dev/null)
+    case "$ZT_ACTION" in
+    status)
+        command -v zerotier-cli >/dev/null 2>&1 || { reply 0 'ZeroTier package is not installed';exit 0; }
+        run zerotier-cli listnetworks ;;
+    start)
+        [ -x /etc/init.d/zerotier ] || { reply 0 'ZeroTier package is not installed';exit 0; }
+        uci -q set zerotier.global.enabled=1 && uci -q commit zerotier || { reply 0 'Could not enable ZeroTier in UCI';exit 0; }
+        /etc/init.d/zerotier enable >/dev/null 2>&1 || { reply 0 'Could not enable ZeroTier';exit 0; }
+        run /etc/init.d/zerotier restart ;;
+    stop)
+        [ -x /etc/init.d/zerotier ] || { reply 0 'ZeroTier package is not installed';exit 0; }
+        uci -q set zerotier.global.enabled=0 && uci -q commit zerotier || { reply 0 'Could not disable ZeroTier in UCI';exit 0; }
+        /etc/init.d/zerotier disable >/dev/null 2>&1 || true
+        run /etc/init.d/zerotier stop ;;
+    join)
+        printf '%s' "$ZT_NETWORK" | LC_ALL=C grep -Eq '^[0-9a-fA-F]{16}$' || { reply 0 'Enter a 16-character hexadecimal network ID';exit 0; }
+        [ -x /etc/init.d/zerotier ] || { reply 0 'ZeroTier package is not installed';exit 0; }
+        ZT_SECTION=''
+        for CANDIDATE in $(uci show zerotier 2>/dev/null | sed -n 's/^zerotier\.\([^.=]*\)=network$/\1/p');do
+            [ "$(uci -q get "zerotier.$CANDIDATE.id")" = "$ZT_NETWORK" ] && { ZT_SECTION=$CANDIDATE;break; }
+        done
+        [ -n "$ZT_SECTION" ] && { reply 0 'This network is already configured';exit 0; }
+        ZT_SECTION=$(uci add zerotier network) || { reply 0 'Could not add ZeroTier network';exit 0; }
+        uci -q set "zerotier.$ZT_SECTION.id=$ZT_NETWORK"
+        uci -q set "zerotier.$ZT_SECTION.allow_managed=1"
+        uci -q set "zerotier.$ZT_SECTION.allow_global=0"
+        uci -q set "zerotier.$ZT_SECTION.allow_default=0"
+        uci -q set "zerotier.$ZT_SECTION.allow_dns=0"
+        uci -q set zerotier.global.enabled=1
+        uci -q commit zerotier || { reply 0 'Could not save ZeroTier configuration';exit 0; }
+        /etc/init.d/zerotier enable >/dev/null 2>&1 || { reply 0 'Could not enable ZeroTier';exit 0; }
+        run /etc/init.d/zerotier restart ;;
+    leave)
+        printf '%s' "$ZT_NETWORK" | LC_ALL=C grep -Eq '^[0-9a-fA-F]{16}$' || { reply 0 'Enter a 16-character hexadecimal network ID';exit 0; }
+        command -v zerotier-cli >/dev/null 2>&1 || { reply 0 'ZeroTier package is not installed';exit 0; }
+        ZT_SECTION=''
+        for CANDIDATE in $(uci show zerotier 2>/dev/null | sed -n 's/^zerotier\.\([^.=]*\)=network$/\1/p');do
+            [ "$(uci -q get "zerotier.$CANDIDATE.id")" = "$ZT_NETWORK" ] && { ZT_SECTION=$CANDIDATE;break; }
+        done
+        if [ -n "$ZT_SECTION" ];then
+            uci -q delete "zerotier.$ZT_SECTION" && uci -q commit zerotier || { reply 0 'Could not remove ZeroTier network';exit 0; }
+            [ "$(uci -q get zerotier.global.enabled)" = 1 ] && { run /etc/init.d/zerotier restart;exit 0; }
+        fi
+        run zerotier-cli leave "$ZT_NETWORK" ;;
+    *) reply 0 'Unsupported ZeroTier action' ;;
+    esac
+    exit 0
 fi
 A=$(printf '%s' "$REQUEST" | jsonfilter -e '@.name' 2>/dev/null)
 case "$A" in
@@ -489,7 +576,7 @@ cat > /usr/share/rpcd/acl.d/mx-ui.json <<'EOF_ACL'
   "mx-ui": {
     "description": "View and manage MX4200 modes through dedicated actions",
     "read": { "ubus": { "mx.ui": [ "status", "profiles", "overview", "logs", "scan_status", "setup_status" ] } },
-    "write": { "ubus": { "mx.ui": [ "action", "priority", "setup" ] } }
+    "write": { "ubus": { "mx.ui": [ "action", "priority", "setup", "zerotier" ] } }
   }
 }
 EOF_ACL
@@ -609,14 +696,15 @@ var submitSetup = rpc.declare({ object: 'mx.ui', method: 'setup', params: [ 'con
 var setupStatus = rpc.declare({ object: 'mx.ui', method: 'setup_status' });
 var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ] });
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
-var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', wireless: 'Wireless', clients: 'Clients', vpn: 'VPN', led: 'LED', logs: 'Logs', system: 'Advanced settings', controls: 'Controls' };
+var zeroTierRpc = rpc.declare({ object: 'mx.ui', method: 'zerotier', params: [ 'action', 'network' ] });
+var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', zerotier: 'ZeroTier', network: 'Network', security: 'Security', traffic: 'Traffic', applications: 'Applications', led: 'LED', logs: 'Logs', system: 'System', controls: 'Controls' };
 var loadError = false;
 function loadStylesheet() {
 	if (document.getElementById('mx-dashboard-style')) return;
 	var link = document.createElement('link');
 	link.id = 'mx-dashboard-style';
 	link.rel = 'stylesheet';
-	link.href = L.resource('mx4200/dashboard.css') + '?v=5';
+    link.href = L.resource('mx4200/dashboard.css') + '?v=6';
 	link.onerror = function() {
 		var fallback = document.createElement('style');
 		fallback.textContent = '.mx-dashboard{display:grid;grid-template-areas:"top top" "side main";grid-template-columns:205px minmax(0,1fr);max-width:1600px;margin:0 auto;background:#eef0f7;color:#252b52;font:14px sans-serif}.mx-global{grid-area:top;background:white;padding:12px;display:flex;justify-content:space-between}.mx-side{grid-area:side;background:#13172d;color:white;padding:20px}.mx-side nav{display:grid;gap:8px}.mx-nav{padding:10px}.mx-main{grid-area:main;padding:24px}.mx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.mx-card{background:white;padding:16px;margin:12px 0;border-radius:8px}.mx-card-head{font-weight:bold}.mx-table{width:100%}.mx-hero{background:#201861;color:white;padding:30px;display:flex;justify-content:space-around}@media(max-width:700px){.mx-dashboard{grid-template-areas:"top" "side" "main";grid-template-columns:1fr}}';
@@ -630,6 +718,7 @@ function chip(label, state) { return E('span', { 'class': 'mx-chip ' + (state ||
 function button(label, callback, style) { return E('button', { 'class': 'mx-btn ' + (style || ''), 'type': 'button', 'click': callback }, label); }
 function link(label, path) { return E('a', { 'href': L.url.apply(L, path.split('/')) }, label); }
 function card(title, body, extra) { return E('section', { 'class': 'mx-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, title), extra || '' ]), E('div', { 'class': 'mx-card-body' }, body) ]); }
+function nativeToolCard(title, description, path) { return card(title, [ E('p', {}, description), E('div', { 'class': 'mx-controls' }, [ link(_('Open LuCI settings'), path) ]) ]); }
 function pair(label, data) { return E('div', { 'class': 'mx-kv' }, [ E('span', {}, label), E('strong', {}, value(data)) ]); }
 function table(headers, rows) { return E('div', { 'class': 'mx-table-wrap' }, E('table', { 'class': 'mx-table' }, [ E('thead', {}, E('tr', {}, headers.map(function(h) { return E('th', {}, h); }))), E('tbody', {}, rows.length ? rows.map(function(row) { return E('tr', {}, row.map(function(cell) { return E('td', {}, cell); })); }) : E('tr', {}, E('td', { 'colspan': String(headers.length), 'class': 'mx-empty' }, _('No data reported.')))) ])); }
 function percent(n) { return Math.max(0, Math.min(100, n)); }
@@ -780,6 +869,25 @@ return view.extend({
 			return [ card(_('Native MX4200 setup'), [ E('p', { 'class': 'mx-note' }, _('Configure this MX4200 directly. Network addresses for wired, Wi-Fi, and USB uplinks come from DHCP; no upstream subnet is assumed. Use HTTPS when entering passwords.')), E('div', { 'class': 'mx-space' }) ].concat(fields)), E('p', { 'class': 'mx-sub' }, _('If configuration commands fail, the previous settings are restored. Wrong upstream credentials or unsupported WDS may still leave the new mode without Internet; use Management Wi-Fi or mx to recover.')) ];
 		}
 		function internetPage() { return [ card(_('Interface status'), [ E('p', { 'class': 'mx-note' }, _('These are the existing MX uplinks. The firmware selects one route by priority and health; it does not load-balance traffic.')), E('div', { 'class': 'mx-space' }), uplinkTable() ]), sectionTitle(_('Interface details')), uplinkDetails(), sectionTitle(_('Routing')), E('div', { 'class': 'mx-grid' }, [ card(_('Active IPv4 route'), [ pair(_('Device'), data.route_device), pair(_('Gateway'), data.gateway), pair(_('Internet probe'), data.internet_probe ? _('Passed') : _('No response')) ]), card(_('WAN socket and management'), [ pair(_('WAN socket'), data.wan_socket === 'none' ? _('Client LAN port') : _('Wired uplink')), pair(_('Repeater preference'), data.wan_preference), pair(_('LAN address'), data.lan_address), pair(_('Isolated management'), data.management_address) ]) ]), sectionTitle(_('Saved mode priorities')), profileTable(), E('p', { 'class': 'mx-sub' }, _('Priority 1 is highest; 0 excludes a saved mode from automatic switching. Changing modes can disconnect this browser.')) ]; }
+        function dnsPage() {
+            var resolvers = (data.uplinks || []).filter(function(u) { return !!u.dns; }).map(function(u) { return [ u.label, u.dns ]; });
+            return [ card(_('Active upstream DNS'), table([ _('Uplink'), _('DNS servers') ], resolvers)), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('DHCP and local DNS'), _('Configure dnsmasq, DHCP leases, and local host records.'), 'admin/network/dhcp'), nativeToolCard(_('Ad blocking'), _('Manage the installed AdBlock Fast service.'), 'admin/services/adblock-fast'), nativeToolCard(_('Encrypted DNS'), _('Configure the HTTPS DNS proxy.'), 'admin/services/https-dns-proxy') ]) ];
+        }
+        function networkPage() {
+            return [ card(_('Network overview'), [ uplinkTable(), E('div', { 'class': 'mx-space' }), pair(_('LAN address'), data.lan_address), pair(_('Management address'), data.management_address), pair(_('Default route'), data.route_device), pair(_('Gateway'), data.gateway) ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('LAN and Ethernet'), _('Configure interfaces, bridges, physical ports, and IPv6.'), 'admin/network/network'), nativeToolCard(_('DHCP and DNS'), _('Manage DHCP reservations and local DNS.'), 'admin/network/dhcp'), nativeToolCard(_('Routes'), _('Inspect and configure static routes.'), 'admin/network/routes'), nativeToolCard(_('Firewall'), _('Configure zones, forwards, and port rules.'), 'admin/network/firewall'), nativeToolCard(_('Multi-WAN'), _('Manage the installed mwan3 policy service.'), 'admin/network/mwan3') ]) ];
+        }
+        function meshPage() {
+            return wirelessPage().concat([ card(_('MX backhaul modes'), [ E('p', {}, _('MX4200 supports routed repeater and WDS bridging. These modes are not 802.11s mesh.')), E('div', { 'class': 'mx-controls' }, [ button(_('Configure backhaul'), openSetup, 'primary'), terminalLink() ]) ]) ]);
+        }
+        function securityPage() {
+            return [ E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Firewall and port forwarding'), _('Review firewall zones, forwards, and inbound rules.'), 'admin/network/firewall'), nativeToolCard(_('UPnP IGD'), _('Optional automatic port mapping. Review the security implications before enabling.'), 'admin/services/upnp'), nativeToolCard(_('Wireless access rules'), _('Configure MAC filtering for supported wireless networks.'), 'admin/network/wireless'), nativeToolCard(_('Administrator access'), _('Manage the local password and access settings.'), 'admin/system/admin') ]) ];
+        }
+        function trafficPage() {
+            return [ card(_('Current uplink traffic'), uplinkDetails()), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Network quality / SQM'), _('Manage latency and queue shaping.'), 'admin/network/sqm'), nativeToolCard(_('Bandwidth monitor'), _('Inspect per-client bandwidth accounting.'), 'admin/services/nlbw'), nativeToolCard(_('Traffic graphs'), _('View vnStat and system statistics.'), 'admin/status/vnstat2'), nativeToolCard(_('Multi-WAN'), _('Configure route policy and failover.'), 'admin/network/mwan3') ]) ];
+        }
+        function applicationsPage() {
+            return [ E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Package manager'), _('Inspect installed packages and available firmware packages.'), 'admin/system/package-manager'), nativeToolCard(_('Dynamic DNS'), _('Configure DDNS providers and updates.'), 'admin/services/ddns'), nativeToolCard(_('Network storage'), _('Configure Samba shares.'), 'admin/services/samba4'), nativeToolCard(_('Samba accounts'), _('Manage MX Samba-only users.'), 'admin/services/samba-users'), nativeToolCard(_('File manager'), _('Browse attached and router storage.'), 'admin/system/filemanager'), nativeToolCard(_('Tailscale'), _('Open Tailscale configuration.'), 'admin/vpn/tailscale'), card(_('ZeroTier'), [ E('p', {}, _('Configure a private overlay VPN without a GL.iNet account.')), button(_('Open ZeroTier controls'), function() { selected = 'zerotier'; draw(); }) ]), nativeToolCard(_('Tor'), _('Configure Tor and onion services.'), 'admin/services/tor'), nativeToolCard(_('UPnP IGD'), _('Manage optional automatic port mapping.'), 'admin/services/upnp'), nativeToolCard(_('Encrypted DNS'), _('Configure DNS-over-HTTPS upstreams.'), 'admin/services/https-dns-proxy'), nativeToolCard(_('Ad blocking'), _('Manage AdBlock Fast.'), 'admin/services/adblock-fast'), nativeToolCard(_('Browser terminal'), _('Open the local OpenWrt terminal.'), 'admin/services/ttyd/ttyd') ]) ];
+        }
 		function profileTable() {
 			var p = saved.profiles || {};
 			return card(_('Failover and failback'), table([ _('Mode'), _('Saved'), _('Priority'), _('Action') ], [ [ 'router', _('Router') ], [ 'router-baseline', _('First-boot router baseline') ], [ 'repeater', _('Routed repeater') ], [ 'wds', _('WDS repeater') ], [ 'ap', _('Wired AP') ] ].map(function(entry) {
@@ -798,8 +906,20 @@ return view.extend({
 			var w = data.wifi || {};
 			return [ card(_('Backhaul'), [ pair(_('5 GHz · radio2 · 4×4'), value(w.mx_primary, _('Not configured'))), pair(_('2.4 GHz · radio1 · backup'), value(w.mx_backup, _('Not configured'))), pair(_('Current backhaul'), data.backhaul), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Automatic'), function() { run('backhaul_auto', true); }), button(_('5 GHz only'), function() { run('backhaul_primary', true); }), button(_('2.4 GHz only'), function() { run('backhaul_backup', true); }) ]) ]), sectionTitle(_('Broadcast networks')), E('div', { 'class': 'mx-grid' }, [ card(_('2.4 GHz'), [ pair(_('SSID'), w.mx_ap2), pair(_('Management SSID'), w.mx_mgmt) ]), card(_('5 GHz'), [ pair(_('5 GHz 2×2'), w.mx_ap5), pair(_('5 GHz 4×4'), w.mx_ap_high) ]) ]), sectionTitle(_('Nearby networks')), E('p', { 'class': 'mx-sub' }, _('Scans reuse the offline MX scanner and exclude this router’s own BSSIDs. Scanning may briefly affect an active Wi-Fi backhaul.')), E('div', { 'class': 'mx-grid' }, [ scanCard('radio2', _('5 GHz · radio2')), scanCard('radio1', _('2.4 GHz · radio1')) ]), sectionTitle(_('Join Wi-Fi')), card(_('Native repeater setup'), [ E('p', {}, _('Use Set up Internet to choose an upstream network and configure WDS or routed repeater.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), terminalLink() ]) ]) ];
 		}
-		function clientsPage() { return [ card(_('Local DHCP leases'), [ E('p', { 'class': 'mx-note' }, _('Only clients receiving a lease from this router appear here. In wired AP and WDS modes, the upstream router manages DHCP leases.')), E('div', { 'class': 'mx-space' }), table([ _('Name'), _('IPv4'), _('MAC') ], (data.clients || []).map(function(c) { return [ value(c.name, _('Unknown')), c.address, c.mac ]; })) ]) ]; }
-		function vpnPage() { return [ E('div', { 'class': 'mx-grid' }, [ card(_('Tailscale'), [ pair(_('State'), data.tailscale_state), pair(_('Router IP'), data.tailscale_ip), E('div', { 'class': 'mx-space' }), link(_('Open Tailscale settings'), 'admin/vpn/tailscale') ]), card(_('WireGuard and OpenVPN'), [ pair(_('WireGuard interfaces'), data.wireguard), pair(_('OpenVPN process'), data.openvpn ? _('Running') : _('Not running')), E('div', { 'class': 'mx-space' }), link(_('Open VPN settings'), 'admin/vpn') ]) ]) ]; }
+        function clientsPage() { return [ card(_('Connected Wi-Fi devices'), [ pair(_('Associated devices'), data.wireless_client_count), E('div', { 'class': 'mx-space' }), table([ _('Name'), _('Radio'), _('IPv4 lease'), _('MAC'), _('Signal'), _('Received'), _('Sent') ], (data.wireless_clients || []).map(function(c) { return [ value(c.name, _('Unknown')), c.radio, value(c.address), c.mac, value(c.signal, '—') + ' dBm', formatBytes(c.rx_bytes), formatBytes(c.tx_bytes) ]; })) ]), card(_('Local DHCP leases'), [ E('p', { 'class': 'mx-note' }, _('Clients using upstream DHCP in wired AP or WDS mode may not appear in this lease list.')), E('div', { 'class': 'mx-space' }), table([ _('Name'), _('IPv4'), _('MAC') ], (data.clients || []).map(function(c) { return [ value(c.name, _('Unknown')), c.address, c.mac ]; })) ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('DHCP reservations'), _('Assign fixed local addresses to known clients.'), 'admin/network/dhcp'), nativeToolCard(_('Access control'), _('Configure per-network wireless MAC filtering.'), 'admin/network/wireless') ]) ]; }
+        function vpnPage() { return [ E('div', { 'class': 'mx-grid' }, [ card(_('Tailscale'), [ pair(_('State'), data.tailscale_state), pair(_('Router IP'), data.tailscale_ip), E('div', { 'class': 'mx-space' }), link(_('Open Tailscale settings'), 'admin/vpn/tailscale') ]), card(_('WireGuard and OpenVPN'), [ pair(_('WireGuard interfaces'), data.wireguard), pair(_('OpenVPN process'), data.openvpn ? _('Running') : _('Not running')), E('div', { 'class': 'mx-space' }), link(_('Open VPN settings'), 'admin/vpn') ]), nativeToolCard(_('WireGuard status'), _('Inspect active WireGuard interfaces and peers.'), 'admin/status/wireguard'), nativeToolCard(_('Policy routing'), _('Configure the installed PBR service.'), 'admin/services/pbr') ]) ]; }
+        function zerotierPage() {
+            var network = E('input', { 'class': 'mx-search', 'type': 'text', 'maxlength': '16', 'autocomplete': 'off', 'placeholder': _('16-character network ID') });
+            var output = E('pre', { 'class': 'mx-result' }, _('Check the service status before joining a network.'));
+            function execute(operation, needsNetwork) {
+                var networkId = network.value.trim();
+                if (needsNetwork && !/^[0-9a-fA-F]{16}$/.test(networkId)) { output.textContent = _('Enter a 16-character hexadecimal network ID.'); return; }
+                if (operation !== 'status' && !window.confirm(_('Confirm ZeroTier ') + operation + '?')) return;
+                output.textContent = _('Working…');
+                return zeroTierRpc(operation, networkId).then(function(response) { output.textContent = response && response.message || _('No response'); }).catch(function(error) { output.textContent = String(error); });
+            }
+            return [ card(_('ZeroTier networks'), [ E('p', { 'class': 'mx-note' }, _('Optional local mesh VPN. Network IDs are sent only to this router; no GL.iNet account is used.')), setupRow(_('Network ID'), network, _('Join or leave one 16-digit hexadecimal ZeroTier network.')), E('div', { 'class': 'mx-controls' }, [ button(_('Start service'), function() { execute('start', false); }, 'primary'), button(_('Refresh status'), function() { execute('status', false); }), button(_('Join network'), function() { execute('join', true); }), button(_('Leave network'), function() { execute('leave', true); }) ]), output ]) ];
+        }
 		function ledPage() { return [ card(_('LED control'), [ pair(_('Current state'), data.led_state), E('p', { 'class': 'mx-muted' }, _('Advanced LED control is an optional module. Once installed, it runs locally on every boot.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Install module'), function() { run('led_install'); }, 'primary'), button(_('Automatic'), function() { run('led_auto'); }, 'accent') ].concat([ 'red', 'green', 'blue', 'purple', 'orange', 'yellow', 'teal', 'white', 'off' ].map(function(color) { return button(color.charAt(0).toUpperCase() + color.slice(1), function() { run('led_' + color); }); }))) ]) ]; }
 		function logsPage() {
 			var text = E('div', { 'class': 'mx-log' }, _('Loading…'));
@@ -811,13 +931,13 @@ return view.extend({
 			reload();
 			return [ card(_('Recent logs · last 120 lines'), [ E('div', { 'class': 'mx-controls' }, [ button(_('System'), function() { logSource = 'system'; draw(); }, logSource === 'system' ? 'primary' : ''), button(_('Kernel'), function() { logSource = 'kernel'; draw(); }, logSource === 'kernel' ? 'primary' : ''), search, button(_('Refresh logs'), reload) ]), E('div', { 'class': 'mx-space' }), text ]) ];
 		}
-		function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]) ]; }
+        function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]), sectionTitle(_('System tools')), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Administrator password'), _('Change local web and SSH credentials.'), 'admin/system/admin'), nativeToolCard(_('Firmware update'), _('Review attended and manual firmware upgrade options.'), 'admin/system/attendedsysupgrade'), nativeToolCard(_('Scheduled tasks'), _('Manage configured cron jobs.'), 'admin/system/crontab'), nativeToolCard(_('Time and timezone'), _('Set local time and timezone.'), 'admin/system/system'), nativeToolCard(_('Backup / flash'), _('Back up configuration or install firmware.'), 'admin/system/flash') ]) ]; }
 		function controlsPage() { return [ card(_('MX mode controls'), [ E('p', {}, _('Use Set up Internet for a new router, WDS, routed repeater, or wired AP configuration. The SSH mx menu remains available offline.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open native setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), link(_('Open MX Manager'), 'admin/services/mx4200'), terminalLink() ]) ]), sectionTitle(_('USB tethering')), card(_('Connected phone'), E('div', { 'class': 'mx-controls' }, [ button(_('Detect USB'), function() { run('usb_detect'); }), button(_('Primary'), function() { run('usb_primary', true); }), button(_('Backup'), function() { run('usb_backup', true); }), button(_('Off'), function() { run('usb_off', true); }) ])), sectionTitle(_('Diagnostics')), card(_('Local checks'), E('div', { 'class': 'mx-controls' }, [ button(_('WDS/DNS test'), function() { run('wds_test'); }), button(_('Auto priorities'), function() { run('auto_status'); }), button(_('One mode decision'), function() { run('auto_once', true); }) ])) ]; }
 		function draw() {
 			page.className = 'mx-dashboard mx-page-' + selected;
 			nav.replaceChildren.apply(nav, Object.keys(names).map(navItem));
 			title.textContent = _(names[selected]);
-			var views = { overview: overviewPage, setup: setupPage, internet: internetPage, wireless: wirelessPage, clients: clientsPage, vpn: vpnPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
+            var views = { overview: overviewPage, setup: setupPage, internet: internetPage, dns: dnsPage, wireless: wirelessPage, mesh: meshPage, clients: clientsPage, vpn: vpnPage, zerotier: zerotierPage, network: networkPage, security: securityPage, traffic: trafficPage, applications: applicationsPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
 			content.replaceChildren.apply(content, views[selected]());
 		}
 		draw();
@@ -850,6 +970,8 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 @media(max-width:1050px){.mx-hero{padding:24px;grid-template-columns:1fr 1.1fr}.mx-hero-clients{grid-column:1/-1;border-left:0;border-top:1px solid #4b48a8;padding:15px 0 0;display:flex;align-items:center;justify-content:space-between}.mx-hero-clients small{max-width:220px}.mx-link-body{grid-template-columns:minmax(0,1fr) 130px}.mx-link-symbol{width:105px;height:105px}}
 @media(max-width:850px){.mx-dashboard{grid-template-areas:'top' 'side' 'main';grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:minmax(0,1fr)}.mx-global{min-height:48px}.mx-side{padding:0;overflow:auto}.mx-side nav{flex-direction:row}.mx-side-note{display:none}.mx-nav{padding:12px;white-space:nowrap;width:auto}.mx-nav.active:before{display:inline-block}.mx-main{padding:18px}.mx-page-overview .mx-main{padding:0 0 25px}.mx-overview-content{padding:16px}}
 @media(max-width:600px){.mx-global{padding:8px 12px;flex-wrap:wrap}.mx-global-brand{font-size:14px}.mx-global-actions{gap:3px;flex-wrap:wrap}.mx-global-actions .mx-chip{display:none}.mx-hero{grid-template-columns:1fr;gap:24px;text-align:center}.mx-hero-sources{order:2}.mx-hero-center{order:1}.mx-hero-clients{order:3;display:grid;text-align:left}.mx-hero-source{justify-content:center}.mx-hero-rule{max-width:45px}.mx-link-body{grid-template-columns:1fr}.mx-link-symbol{display:none}.mx-link-pairs .mx-kv{grid-template-columns:1fr 1fr}.mx-overview-content>.mx-grid{grid-template-columns:1fr}}
+@media(min-width:851px){.mx-side nav{max-height:calc(100vh - 110px);overflow-y:auto}}
+@media(min-width:851px){.mx-side nav{max-height:calc(100vh - 110px);overflow-y:auto}}
 EOF_CSS
 touch /etc/sysupgrade.conf
 for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
