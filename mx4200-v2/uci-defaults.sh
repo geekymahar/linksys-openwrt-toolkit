@@ -137,9 +137,9 @@ cat > /root/mxr <<'EOF'
 TARGET="$1"
 case "$TARGET" in wds|repeater);;*) exit 1;;esac
 date +%s >/tmp/mxauto-manual
-WAN_PORT=lan;WAN_PREF=wifi
+WAN_PORT=wan;WAN_PREF=wifi
 if [ "$TARGET" = repeater ];then
-while true;do printf 'WAN socket: 1=client LAN port 2=wired uplink [1]: ';read -r A||exit 1;case "$A" in ''|1)break;;2)WAN_PORT=wan;break;;esac;done
+while true;do printf 'WAN socket: 1=client LAN port 2=wired uplink [2]: ';read -r A||exit 1;case "$A" in 1)WAN_PORT=lan;break;;''|2)break;;esac;done
 if [ "$WAN_PORT" = wan ];then
 echo 'Failover needs route loss, not just an Internet outage.'
 while true;do printf 'Preferred uplink: 1=wired WAN 2=Wi-Fi repeater [2]: ';read -r A||exit 1;case "$A" in ''|2)break;;1)WAN_PREF=wan;break;;esac;done

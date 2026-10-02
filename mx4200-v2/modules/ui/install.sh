@@ -60,7 +60,7 @@ wifi_link(){
     return 1
 }
 case "$1" in
-list) printf '{"status":{},"profiles":{},"overview":{},"logs":{"source":""},"scan_status":{"band":""},"setup":{"config":{}},"setup_status":{},"action":{"name":""},"priority":{"mode":"","value":0},"zerotier":{"action":"","network":""}}\n';exit 0 ;;
+list) printf '{"status":{},"profiles":{},"overview":{},"logs":{"source":""},"scan_status":{"band":""},"setup":{"config":{}},"setup_status":{},"action":{"name":""},"priority":{"mode":"","value":0},"zerotier":{"action":"","network":""},"dns_proxy":{"action":"","provider":""}}\n';exit 0 ;;
 call) ;;
 *) exit 1 ;;
 esac
@@ -103,6 +103,30 @@ overview)
     json_add_string ssh_port "$(uci -q get dropbear.@dropbear[0].Port)"
     json_add_string http_listen "$(uci -q get uhttpd.main.listen_http)"
     json_add_string https_listen "$(uci -q get uhttpd.main.listen_https)"
+    ADBLOCK_STATUS=$(ubus call luci.adblock-fast getInitStatus '{"name":"adblock-fast"}' 2>/dev/null)
+    ADBLOCK_ENABLED=$(field "$ADBLOCK_STATUS" '@["adblock-fast"].enabled')
+    ADBLOCK_RUNNING=$(field "$ADBLOCK_STATUS" '@["adblock-fast"].running')
+    ADBLOCK_ENABLED=0;case "$ADBLOCK_ENABLED" in 1|true) ADBLOCK_ENABLED=1 ;; esac
+    ADBLOCK_RUNNING=0;case "$ADBLOCK_RUNNING" in 1|true) ADBLOCK_RUNNING=1 ;; esac
+    json_add_int adblock_fast_enabled "$ADBLOCK_ENABLED"
+    json_add_int adblock_fast_running "$ADBLOCK_RUNNING"
+    json_add_string adblock_dns_mode "$(field "$ADBLOCK_STATUS" '@["adblock-fast"].dns')"
+    DOH_COUNT=0;DOH_PROVIDER=''
+    for INDEX in 0 1 2 3 4 5 6 7;do
+        URL=$(uci -q get "https-dns-proxy.@https-dns-proxy[$INDEX].resolver_url" 2>/dev/null)
+        [ -n "$URL" ] || continue
+        case "$URL" in *cloudflare-dns.com*) PROVIDER=Cloudflare;;*dns.google*) PROVIDER=Google;;*dns.quad9.net*) PROVIDER=Quad9;;*) PROVIDER=Custom;;esac
+        DOH_COUNT=$((DOH_COUNT+1))
+        if [ -z "$DOH_PROVIDER" ];then DOH_PROVIDER=$PROVIDER
+        elif [ "$DOH_PROVIDER" != "$PROVIDER" ];then DOH_PROVIDER=Multiple;fi
+    done
+    DOH_RUNNING=0;pgrep -f '[h]ttps-dns-proxy' >/dev/null 2>&1 && DOH_RUNNING=1
+    json_add_int encrypted_dns_count "$DOH_COUNT"
+    json_add_string encrypted_dns_provider "${DOH_PROVIDER:-Not configured}"
+    json_add_int encrypted_dns_running "$DOH_RUNNING"
+    DNSMASQ_DOH_UPDATE=$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)
+    DNSMASQ_DOH_UPDATE=${DNSMASQ_DOH_UPDATE:-*}
+    json_add_string encrypted_dns_dnsmasq_update "$DNSMASQ_DOH_UPDATE"
     json_add_string memory_total "$(awk '$1=="MemTotal:"{print $2}' /proc/meminfo 2>/dev/null)"
     json_add_string memory_available "$(awk '$1=="MemAvailable:"{print $2}' /proc/meminfo 2>/dev/null)"
     json_add_string flash "$(df -k /overlay 2>/dev/null | awk 'NR==2{print $2" "$3" "$4}')"
@@ -210,7 +234,7 @@ profiles)
         json_close_object
     done
     json_close_object;json_dump;exit 0 ;;
-action|priority|zerotier) ;;
+action|priority|zerotier|dns_proxy) ;;
 *) reply 0 'Unsupported method';exit 0 ;;
 esac
 REQUEST=$(cat)
@@ -227,6 +251,41 @@ if [ "$2" = priority ]; then
     chmod 600 "$PRIORITIES.new";mv "$PRIORITIES.new" "$PRIORITIES"
     date +%s > /tmp/mxauto-manual
     reply 1 'Priority saved';exit 0
+fi
+if [ "$2" = dns_proxy ];then
+    DNS_ACTION=$(printf '%s' "$REQUEST" | jsonfilter -e '@.action' 2>/dev/null)
+    DNS_PROVIDER=$(printf '%s' "$REQUEST" | jsonfilter -e '@.provider' 2>/dev/null)
+    case "$DNS_ACTION" in
+    enable)
+        [ -x /etc/init.d/https-dns-proxy ] || { reply 0 'HTTPS DNS Proxy package is not installed';exit 0; }
+        [ -n "$(uci -q get 'https-dns-proxy.@https-dns-proxy[0].resolver_url')" ] || { reply 0 'Configure an encrypted DNS provider before enabling the proxy';exit 0; }
+        /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || { reply 0 'Could not enable HTTPS DNS Proxy';exit 0; }
+        run /etc/init.d/https-dns-proxy restart ;;
+    disable)
+        [ -x /etc/init.d/https-dns-proxy ] || { reply 0 'HTTPS DNS Proxy package is not installed';exit 0; }
+        /etc/init.d/https-dns-proxy disable >/dev/null 2>&1 || { reply 0 'Could not disable HTTPS DNS Proxy';exit 0; }
+        run /etc/init.d/https-dns-proxy stop ;;
+    provider)
+        [ -x /etc/init.d/https-dns-proxy ] && [ -f /etc/config/https-dns-proxy ] || { reply 0 'HTTPS DNS Proxy package is not installed';exit 0; }
+        case "$DNS_PROVIDER" in
+            cloudflare) RESOLVER='https://cloudflare-dns.com/dns-query';BOOTSTRAP='1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001' ;;
+            google) RESOLVER='https://dns.google/dns-query';BOOTSTRAP='8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844' ;;
+            quad9) RESOLVER='https://dns.quad9.net/dns-query';BOOTSTRAP='9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9' ;;
+            *) reply 0 'Choose Cloudflare, Google, or Quad9';exit 0 ;;
+        esac
+        BACKUP=/tmp/mx-doh-config.$$
+        cp /etc/config/https-dns-proxy "$BACKUP" || { reply 0 'Could not back up DNS proxy configuration';exit 0; }
+        chmod 600 "$BACKUP"
+        for SECTION in $(uci -q show https-dns-proxy | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p');do
+            uci -q delete "https-dns-proxy.$SECTION" || { cp "$BACKUP" /etc/config/https-dns-proxy;rm -f "$BACKUP";reply 0 'Could not replace DNS proxy profiles';exit 0; }
+        done
+        SECTION=$(uci add https-dns-proxy https-dns-proxy 2>/dev/null) || SECTION=''
+        [ -n "$SECTION" ] && uci -q set "https-dns-proxy.$SECTION.resolver_url=$RESOLVER" && uci -q set "https-dns-proxy.$SECTION.bootstrap_dns=$BOOTSTRAP" && uci -q set "https-dns-proxy.$SECTION.listen_addr=127.0.0.1" && uci -q set "https-dns-proxy.$SECTION.listen_port=5053" && uci -q set https-dns-proxy.config.dnsmasq_config_update='*' && uci -q commit https-dns-proxy || { cp "$BACKUP" /etc/config/https-dns-proxy;uci -q commit https-dns-proxy;rm -f "$BACKUP";reply 0 'Could not save encrypted DNS provider';exit 0; }
+        /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || { cp "$BACKUP" /etc/config/https-dns-proxy;uci -q commit https-dns-proxy;rm -f "$BACKUP";reply 0 'Could not enable HTTPS DNS Proxy';exit 0; }
+        if /etc/init.d/https-dns-proxy restart >/dev/null 2>&1;then rm -f "$BACKUP";reply 1 "Encrypted DNS set to $DNS_PROVIDER; dnsmasq filtering remains enabled";else cp "$BACKUP" /etc/config/https-dns-proxy;uci -q commit https-dns-proxy;/etc/init.d/https-dns-proxy restart >/dev/null 2>&1||true;rm -f "$BACKUP";reply 0 'DNS proxy restart failed; previous resolver configuration restored';fi ;;
+    *) reply 0 'Unsupported encrypted DNS action' ;;
+    esac
+    exit 0
 fi
 if [ "$2" = zerotier ];then
     ZT_ACTION=$(printf '%s' "$REQUEST" | jsonfilter -e '@.action' 2>/dev/null)
@@ -288,6 +347,15 @@ usb_backup) run /usr/sbin/mxu backup ;;
 usb_off) run /usr/sbin/mxu off ;;
 scan_5g) run /usr/sbin/mxscan-ui start radio2 ;;
 scan_2g) run /usr/sbin/mxscan-ui start radio1 ;;
+doh_enable)
+    [ -x /etc/init.d/https-dns-proxy ] || { reply 0 'HTTPS DNS Proxy package is not installed';exit 0; }
+    [ -n "$(uci -q get 'https-dns-proxy.@https-dns-proxy[0].resolver_url')" ] || { reply 0 'Configure a resolver in HTTPS DNS Proxy settings first';exit 0; }
+    /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || { reply 0 'Could not enable HTTPS DNS Proxy';exit 0; }
+    run /etc/init.d/https-dns-proxy restart ;;
+doh_disable)
+    [ -x /etc/init.d/https-dns-proxy ] || { reply 0 'HTTPS DNS Proxy package is not installed';exit 0; }
+    /etc/init.d/https-dns-proxy disable >/dev/null 2>&1 || { reply 0 'Could not disable HTTPS DNS Proxy';exit 0; }
+    run /etc/init.d/https-dns-proxy stop ;;
 backhaul_auto|backhaul_primary|backhaul_backup)
     case "$(mode)" in wds|repeater) ;; *) reply 0 'Backhaul controls require WDS or routed repeater';exit 0 ;; esac
     run /usr/sbin/mxb "${A#backhaul_}" ;;
@@ -378,6 +446,8 @@ resolve_security(){
 validate(){
     MODE=$(field mode);PRIORITY=$(field priority)
     case "$MODE" in router|repeater|wds|ap) ;; *) bad 'Choose a router mode';return 1;;esac
+    if [ -z "$PRIORITY" ];then PRIORITY=$(awk -v m="$MODE" '$1==m{print $2;exit}' /etc/mx4200/auto-priority 2>/dev/null);fi
+    PRIORITY=${PRIORITY:-0}
     case "$PRIORITY" in [0-9]) ;; *) bad 'Priority must be 0–9';return 1;;esac
     case "$MODE" in
     router|ap)
@@ -415,7 +485,8 @@ validate(){
             MGMT_PASS=$(field management_password)
             secret "$MGMT_PASS" || { bad 'Management password must be 8–63 bytes';return 1; }
         else
-            WAN_PORT=$(field wan_port);WAN_PREF=$(field wan_preference)
+            WAN_PORT=$(field wan_port);WAN_PORT=${WAN_PORT:-wan}
+            WAN_PREF=$(field wan_preference);WAN_PREF=${WAN_PREF:-wifi}
             case "$WAN_PORT" in lan|wan) ;; *) bad 'Choose a WAN socket role';return 1;;esac
             case "$WAN_PREF" in wifi|wan) ;; *) bad 'Choose a wired or Wi-Fi preference';return 1;;esac
             [ "$WAN_PORT" = wan ] || WAN_PREF=wifi
@@ -576,7 +647,7 @@ cat > /usr/share/rpcd/acl.d/mx-ui.json <<'EOF_ACL'
   "mx-ui": {
     "description": "View and manage MX4200 modes through dedicated actions",
     "read": { "ubus": { "mx.ui": [ "status", "profiles", "overview", "logs", "scan_status", "setup_status" ] } },
-    "write": { "ubus": { "mx.ui": [ "action", "priority", "setup", "zerotier" ] } }
+    "write": { "ubus": { "mx.ui": [ "action", "priority", "setup", "zerotier", "dns_proxy" ] } }
   }
 }
 EOF_ACL
@@ -697,8 +768,9 @@ var setupStatus = rpc.declare({ object: 'mx.ui', method: 'setup_status' });
 var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ] });
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
 var zeroTierRpc = rpc.declare({ object: 'mx.ui', method: 'zerotier', params: [ 'action', 'network' ] });
-var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', zerotier: 'ZeroTier', network: 'Network', security: 'Security', traffic: 'Traffic', applications: 'Applications', led: 'LED', logs: 'Logs', system: 'System', controls: 'Controls' };
-var navIcons = { overview: 'OV', setup: '+', internet: '↔', dns: 'D', wireless: 'W', mesh: 'M', clients: 'C', vpn: 'V', zerotier: 'Z', network: 'N', security: 'S', traffic: 'T', applications: 'A', led: 'L', logs: '≡', system: '⚙', controls: '⋯' };
+var dnsProxyRpc = rpc.declare({ object: 'mx.ui', method: 'dns_proxy', params: [ 'action', 'provider' ] });
+var names = { overview: 'Internet', setup: 'Set up Internet', priority: 'Mode Priority', internet: 'WAN Details', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', zerotier: 'ZeroTier', network: 'Network', security: 'Security', traffic: 'Traffic', applications: 'Applications', led: 'LED', logs: 'Logs', system: 'System', controls: 'Controls' };
+var navIcons = { overview: '⌂', setup: '＋', priority: '⇅', internet: '↗', dns: '≋', wireless: '⌁', mesh: '⤭', clients: '◉', vpn: '⬡', zerotier: 'Z', network: '↔', security: '⛨', traffic: '▥', applications: '▦', led: '◐', logs: '≡', system: '⚙', controls: '⋯' };
 var loadError = false;
 function loadStylesheet() {
 	if (document.getElementById('mx-dashboard-style')) return;
@@ -716,7 +788,7 @@ function loadStylesheet() {
 
 function value(v, fallback) { return v === undefined || v === null || v === '' ? (fallback || '—') : String(v); }
 function chip(label, state) { return E('span', { 'class': 'mx-chip ' + (state || '') }, label); }
-function button(label, callback, style) { return E('button', { 'class': 'mx-btn ' + (style || ''), 'type': 'button', 'click': callback }, label); }
+function button(label, callback, style) { return E('button', { 'class': 'mx-btn ' + (style || ''), 'type': 'button', 'click': callback }, [ E('span', { 'class': 'mx-btn-label' }, label), E('span', { 'class': 'mx-btn-sheen', 'aria-hidden': 'true' }) ]); }
 function link(label, path) { return E('a', { 'href': L.url.apply(L, path.split('/')) }, label); }
 function card(title, body, extra) { return E('section', { 'class': 'mx-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, title), extra || '' ]), E('div', { 'class': 'mx-card-body' }, body) ]); }
 function nativeToolCard(title, description, path) { return card(title, [ E('p', {}, description), E('div', { 'class': 'mx-controls' }, [ link(_('Open LuCI settings'), path) ]) ]); }
@@ -740,7 +812,7 @@ return view.extend({
 	render: function(initial) {
 		var data = initial[0] || {}, saved = initial[1] || {}, selected = 'overview', busy = false;
 		var scans = { radio1: {}, radio2: {} }, logSource = 'system';
-		var setupData = { mode: data.mode || 'router', priority: '0', wan_port: 'lan', wan_preference: 'wifi', primary_bssid: '', primary_security: 'auto', primary_password: '', backup_bssid: '', backup_security: 'auto', backup_password: '', backup_same: false, client_ssid: '', client_password: '', ap_ssid: 'LS-MX4200v2', ap_security: 'none', ap_password: '', management_password: '' };
+        var setupData = { mode: data.mode || 'router', wan_port: 'wan', wan_preference: 'wifi', primary_bssid: '', primary_security: 'auto', primary_password: '', backup_bssid: '', backup_security: 'auto', backup_password: '', client_ssid: '', client_password: '', ap_ssid: 'LS-MX4200v2', ap_security: 'none', ap_password: '', management_password: '' };
 		var content = E('div'), nav = E('nav'), result = E('div', { 'class': 'mx-result', 'hidden': true });
 		var subtitle = E('p', { 'class': 'mx-sub' }, _('Live status and controls for your MX4200 V2/P2.'));
 		var title = E('h2', {}, _('Overview'));
@@ -809,7 +881,12 @@ return view.extend({
 			return setupRow(label, E('input', { 'class': 'mx-search', 'type': type || 'text', 'value': setupData[key] || '', 'autocomplete': type === 'password' ? 'new-password' : 'off', 'input': function(ev) { setupData[key] = ev.target.value; } }), hint);
 		}
 		function setupSelect(label, key, choices, hint) {
-			var el = E('select', { 'class': 'mx-search', 'change': function(ev) { setupData[key] = ev.target.value; draw(); } }, choices.map(function(pair) { return E('option', { 'value': pair[0] }, pair[1]); }));
+            var el = E('select', { 'class': 'mx-search', 'change': function(ev) {
+                var selectedValue = ev.target.value;
+                if (key === 'primary_bssid' && setupData.primary_bssid !== selectedValue) { setupData.primary_password = '';setupData.primary_security = 'auto'; }
+                if (key === 'backup_bssid' && setupData.backup_bssid !== selectedValue) { setupData.backup_password = '';setupData.backup_security = 'auto'; }
+                setupData[key] = selectedValue;draw();
+            } }, choices.map(function(pair) { return E('option', { 'value': pair[0] }, pair[1]); }));
 			el.value = String(setupData[key] || '');
 			return setupRow(label, el, hint);
 		}
@@ -818,7 +895,14 @@ return view.extend({
 			(s.networks || []).forEach(function(n) { choices.push([ n.bssid, n.ssid + ' · ch ' + n.channel + ' · ' + n.signal + ' dBm · ' + n.security ]); });
 			return card(label, [ setupSelect(_('Network'), key, choices, _('The BSSID and channel come from this router’s scan; your router’s own BSSIDs are excluded.')), E('div', { 'class': 'mx-controls' }, [ button(_('Scan'), function() { startScan(band); }, 'primary'), chip(value(s.state, _('Not scanned')), s.state === 'ready' ? 'ok' : 'info') ]) ]);
 		}
-		function setupSecurity(key, label) { return setupSelect(label, key, [ [ 'auto', _('Use scan result') ], [ 'psk2', _('WPA2-PSK (confirm ambiguous WPA scan)') ], [ 'psk', _('Legacy WPA1-PSK') ] ], _('If the scan says only “WPA PSK”, confirm WPA1 or WPA2 explicitly.')); }
+        function setupSecurity(key, label) { return setupSelect(label, key, [ [ 'auto', _('Use scan result') ], [ 'psk2', _('WPA2-PSK (confirm ambiguous WPA scan)') ], [ 'psk', _('Legacy WPA1-PSK') ] ], _('If the scan says only “WPA PSK”, confirm WPA1 or WPA2 explicitly.')); }
+        function scanNeedsPassword(band, bssid) {
+            var networks = scans[band] && scans[band].networks || [];
+            for (var index = 0; index < networks.length; index++) {
+                if (networks[index].bssid === bssid) return networks[index].security !== 'none' && networks[index].security !== 'owe';
+            }
+            return true;
+        }
 		function pollSetup() {
 			return setupStatus().then(function(s) {
 				if (s.state === 'running') { notice(_('Applying setup; the router may change address. Reconnect if this page stops responding.'), true); window.setTimeout(pollSetup, 4000); }
@@ -829,7 +913,7 @@ return view.extend({
 		function applySetup() {
 			if (busy || !window.confirm(_('Apply this network setup? Clients may disconnect, and the router address may change.'))) return;
 			busy = true;notice(_('Validating setup…'), true);
-			var config = Object.assign({}, setupData, { backup_same: setupData.backup_same ? '1' : '0' });
+            var config = Object.assign({}, setupData, { backup_same: '0' });
 			return submitSetup(config).then(function(reply) {
 				notice(value(reply.message), !!reply.ok);
 				if (reply.ok) { setupData.primary_password = setupData.backup_password = setupData.client_password = setupData.ap_password = setupData.management_password = ''; draw(); pollSetup(); }
@@ -846,13 +930,10 @@ return view.extend({
 			} else {
 				fields.push(E('div', { 'class': 'mx-grid' }, [ setupScan('radio2', 'primary_bssid', _('Primary · 5 GHz radio2')), setupScan('radio1', 'backup_bssid', _('Optional backup · 2.4 GHz radio1')) ]));
 				fields.push(setupSecurity('primary_security', _('5 GHz security')));
-				fields.push(setupInput(_('5 GHz upstream password'), 'primary_password', 'password', _('Leave empty only for an open or OWE network.')));
+                if (!setupData.primary_bssid || scanNeedsPassword('radio2', setupData.primary_bssid)) fields.push(setupInput(_('5 GHz upstream password'), 'primary_password', 'password', _('This password is only for the selected 5 GHz network.')));
 				if (setupData.backup_bssid) {
 					fields.push(setupSecurity('backup_security', _('Backup security')));
-					var samePassword = E('input', { 'type': 'checkbox', 'change': function(ev) { setupData.backup_same = ev.target.checked; draw(); } });
-					samePassword.checked = setupData.backup_same;
-					fields.push(setupRow(_('Use same upstream password'), samePassword, _('Available when both bands use the same SSID.')));
-					if (!setupData.backup_same) fields.push(setupInput(_('2.4 GHz upstream password'), 'backup_password', 'password'));
+                    if (scanNeedsPassword('radio1', setupData.backup_bssid)) fields.push(setupInput(_('2.4 GHz upstream password'), 'backup_password', 'password', _('This password is separate from the selected 5 GHz network.')));
 				}
 				fields.push(setupInput(_('Client Wi-Fi name'), 'client_ssid', 'text', _('The router broadcasts this name with -RPT-5G and -RPT-2G.')));
 				fields.push(setupInput(_('Client Wi-Fi password'), 'client_password', 'password', _('Client security matches the selected upstream security. Leave empty only for an open/OWE upstream.')));
@@ -863,16 +944,33 @@ return view.extend({
 					if (setupData.wan_port === 'wan') fields.push(setupSelect(_('Preferred uplink'), 'wan_preference', [ [ 'wifi', _('Wi-Fi repeater first') ], [ 'wan', _('Wired WAN first') ] ], _('The other uplink remains available for failover.')));
 				}
 			}
-			var ranks = [ [ '0', _('0 · manual only') ] ];
-			for (var i = 1; i <= 9; i++) ranks.push([ String(i), String(i) + (i === 1 ? _(' · highest') : '') ]);
-			fields.push(setupSelect(_('Automatic mode priority'), 'priority', ranks, _('Priority 1 is highest; 0 excludes this saved mode from automatic switching.')));
 			fields.push(E('div', { 'class': 'mx-controls' }, [ button(_('Apply setup'), applySetup, 'primary'), terminalLink() ]));
 			return [ card(_('Native MX4200 setup'), [ E('p', { 'class': 'mx-note' }, _('Configure this MX4200 directly. Network addresses for wired, Wi-Fi, and USB uplinks come from DHCP; no upstream subnet is assumed. Use HTTPS when entering passwords.')), E('div', { 'class': 'mx-space' }) ].concat(fields)), E('p', { 'class': 'mx-sub' }, _('If configuration commands fail, the previous settings are restored. Wrong upstream credentials or unsupported WDS may still leave the new mode without Internet; use Management Wi-Fi or mx to recover.')) ];
 		}
-		function internetPage() { return [ card(_('Interface status'), [ E('p', { 'class': 'mx-note' }, _('These are the existing MX uplinks. The firmware selects one route by priority and health; it does not load-balance traffic.')), E('div', { 'class': 'mx-space' }), uplinkTable() ]), sectionTitle(_('Interface details')), uplinkDetails(), sectionTitle(_('Routing')), E('div', { 'class': 'mx-grid' }, [ card(_('Active IPv4 route'), [ pair(_('Device'), data.route_device), pair(_('Gateway'), data.gateway), pair(_('Internet probe'), data.internet_probe ? _('Passed') : _('No response')) ]), card(_('WAN socket and management'), [ pair(_('WAN socket'), data.wan_socket === 'none' ? _('Client LAN port') : _('Wired uplink')), pair(_('Repeater preference'), data.wan_preference), pair(_('LAN address'), data.lan_address), pair(_('Isolated management'), data.management_address) ]) ]), sectionTitle(_('Saved mode priorities')), profileTable(), E('p', { 'class': 'mx-sub' }, _('Priority 1 is highest; 0 excludes a saved mode from automatic switching. Changing modes can disconnect this browser.')) ]; }
+        function internetPage() { return [ card(_('Interface status'), [ E('p', { 'class': 'mx-note' }, _('The active route follows configured metrics and available links. A live upstream Internet outage may need health-checked mode failover.' )), E('div', { 'class': 'mx-space' }), uplinkTable() ]), sectionTitle(_('Interface details')), uplinkDetails(), sectionTitle(_('Routing')), E('div', { 'class': 'mx-grid' }, [ card(_('Active IPv4 route'), [ pair(_('Device'), data.route_device), pair(_('Gateway'), data.gateway), pair(_('Internet probe'), data.internet_probe ? _('Passed') : _('No response')) ]), card(_('WAN socket and management'), [ pair(_('WAN socket'), data.wan_socket === 'none' ? _('Client LAN port') : _('Wired uplink')), pair(_('Repeater preference'), data.wan_preference), pair(_('LAN address'), data.lan_address), pair(_('Isolated management'), data.management_address) ]) ]), E('div', { 'class': 'mx-controls' }, [ button(_('Configure mode priority'), function() { selected = 'priority';draw(); }, 'primary') ]) ]; }
         function dnsPage() {
             var resolvers = (data.uplinks || []).filter(function(u) { return !!u.dns; }).map(function(u) { return [ u.label, u.dns ]; });
-            return [ card(_('Active upstream DNS'), table([ _('Uplink'), _('DNS servers') ], resolvers)), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('DHCP and local DNS'), _('Configure dnsmasq, DHCP leases, and local host records.'), 'admin/network/dhcp'), nativeToolCard(_('Ad blocking'), _('Manage the installed AdBlock Fast service.'), 'admin/services/adblock-fast'), nativeToolCard(_('Encrypted DNS'), _('Configure the HTTPS DNS proxy.'), 'admin/services/https-dns-proxy') ]) ];
+            var adblockEnabled = data.adblock_fast_enabled === 1, adblockActive = data.adblock_fast_running === 1;
+            var adblockStatus = !adblockEnabled ? _('Disabled / not installed') : adblockActive ? _('Active') : _('Enabled, not running');
+            var proxyConfigured = Number(data.encrypted_dns_count) > 0;
+            var dnsmasqUpdate = data.encrypted_dns_dnsmasq_update || _('Not configured');
+            var adblockUsesDnsmasq = (data.adblock_dns_mode || '').indexOf('dnsmasq.') === 0;
+            var chain = adblockActive && adblockUsesDnsmasq && proxyConfigured && data.encrypted_dns_running === 1 && dnsmasqUpdate === '*' ? _('AdBlock Fast → dnsmasq → encrypted DNS') : _('Check the service states and dnsmasq integration below.');
+            var providerSelect = E('select', { 'class': 'mx-search' }, [ [ '', _('Choose provider preset') ], [ 'cloudflare', 'Cloudflare' ], [ 'google', 'Google' ], [ 'quad9', 'Quad9' ] ].map(function(option) { return E('option', { 'value': option[0] }, option[1]); }));
+            var currentProvider = String(data.encrypted_dns_provider || '').toLowerCase();
+            providerSelect.value = [ 'cloudflare', 'google', 'quad9' ].indexOf(currentProvider) >= 0 ? currentProvider : '';
+            var applyResult = E('pre', { 'class': 'mx-result', 'hidden': true });
+            function updateDns(actionName) {
+                if (actionName === 'provider' && !providerSelect.value) { applyResult.hidden = false;applyResult.textContent = _('Choose a DNS provider first.');return; }
+                if (actionName === 'provider' && !window.confirm(_('This replaces the HTTPS DNS Proxy resolver list with the selected preset. Continue?'))) return;
+                if (actionName === 'enable' && !proxyConfigured) { applyResult.hidden = false;applyResult.textContent = _('Choose and apply a provider before enabling encrypted DNS.');return; }
+                applyResult.hidden = false;applyResult.textContent = _('Applying DNS settings…');
+                return dnsProxyRpc(actionName, providerSelect.value).then(function(response) {
+                    applyResult.textContent = response && response.message || _('No response');
+                    if (response && response.ok) return refresh();
+                }).catch(function(error) { applyResult.textContent = String(error); });
+            }
+            return [ card(_('DNS status and path'), [ table([ _('Uplink'), _('Learned DNS servers') ], resolvers), pair(_('AdBlock Fast'), adblockStatus), pair(_('AdBlock mode'), data.adblock_dns_mode || _('Not configured')), pair(_('Encrypted provider'), data.encrypted_dns_provider), pair(_('HTTPS DNS Proxy'), data.encrypted_dns_running === 1 ? _('Running') : proxyConfigured ? _('Configured, stopped') : _('Not configured')), pair(_('dnsmasq integration'), dnsmasqUpdate), pair(_('Resolved path'), chain), E('p', { 'class': 'mx-note' }, _('AdBlock Fast filters locally through dnsmasq; HTTPS DNS Proxy resolves the upstream queries. In dnsmasq.servers mode with proxy integration enabled, filtering remains in the path.')), E('div', { 'class': 'mx-controls' }, [ button(_('Refresh DNS status'), refresh) ]) ]), card(_('Encrypted DNS provider'), [ E('p', {}, _('Select a preset upstream. AdBlock Fast stays in dnsmasq and HTTPS DNS Proxy supplies encrypted upstream resolution. Custom endpoints remain available in the native LuCI page.')), setupRow(_('Provider'), providerSelect, _('Applying a preset replaces the current HTTPS DNS Proxy resolver instances.')), E('div', { 'class': 'mx-controls' }, [ button(_('Apply provider'), function() { updateDns('provider'); }, 'primary'), button(_('Enable encrypted DNS'), function() { updateDns('enable'); }), button(_('Disable encrypted DNS'), function() { updateDns('disable'); }), link(_('Advanced DoH settings'), 'admin/services/https-dns-proxy') ]), applyResult ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('WAN DNS servers'), _('Edit DNS servers assigned to the WAN interface.'), 'admin/network/network'), nativeToolCard(_('Local DNS and DHCP'), _('Configure dnsmasq, DHCP reservations, and local host records.'), 'admin/network/dhcp'), nativeToolCard(_('AdBlock Fast'), _('Enable filtering and choose its dnsmasq integration mode.'), 'admin/services/adblock-fast') ]) ];
         }
         function networkPage() {
             return [ card(_('Network overview'), [ uplinkTable(), E('div', { 'class': 'mx-space' }), pair(_('LAN address'), data.lan_address), pair(_('Management address'), data.management_address), pair(_('Default route'), data.route_device), pair(_('Gateway'), data.gateway) ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('LAN and Ethernet'), _('Configure interfaces, bridges, physical ports, and IPv6.'), 'admin/network/network'), nativeToolCard(_('DHCP and DNS'), _('Manage DHCP reservations and local DNS.'), 'admin/network/dhcp'), nativeToolCard(_('Routes'), _('Inspect and configure static routes.'), 'admin/network/routes'), nativeToolCard(_('Firewall'), _('Configure zones, forwards, and port rules.'), 'admin/network/firewall'), nativeToolCard(_('Multi-WAN'), _('Manage the installed mwan3 policy service.'), 'admin/network/mwan3') ]) ];
@@ -899,6 +997,12 @@ return view.extend({
 				return [ entry[1] + (data.mode === key ? ' · ' + _('active') : ''), item.saved ? _('Yes') : _('No'), priorityCell, item.saved ? button(_('Restore'), function() { run('profile_' + key.replace('-', '_'), true); }) : '—' ];
 			})), E('div', { 'class': 'mx-controls' }, [ button(_('Save current mode'), function() { run('save_current'); }), link(_('Full manager'), 'admin/services/mx4200') ]));
 		}
+        function priorityPage() {
+            var status = E('pre', { 'class': 'mx-result' }, _('Checking automatic mode service…'));
+            function refreshAutoStatus() { return action('auto_status').then(function(response) { status.textContent = response && response.message || _('No response'); }).catch(function(error) { status.textContent = String(error); }); }
+            refreshAutoStatus();
+            return [ card(_('Health-checked mode failover'), [ E('p', { 'class': 'mx-note' }, _('Set priority on saved modes here, not during network setup. Priority 1 is highest; 0 disables a saved mode. The optional mxauto service tests connectivity before switching modes.')), E('div', { 'class': 'mx-controls' }, [ button(_('Refresh service status'), refreshAutoStatus) ]), status ]), profileTable() ];
+        }
 		function scanCard(band, label) {
 			var s = scans[band] || {}, rows = (s.networks || []).map(function(n) { return [ n.ssid, n.channel, n.signal + ' dBm', n.security, n.bssid ]; });
 			return card(label, [ E('div', { 'class': 'mx-controls' }, [ button(_('Scan now'), function() { startScan(band); }, 'primary'), button(_('Refresh results'), function() { loadScan(band); }), chip(value(s.state, _('Not scanned')), s.state === 'ready' ? 'ok' : 'info') ]), E('div', { 'class': 'mx-space' }), s.state === 'running' ? E('p', {}, _('Scanning; DFS channels can take longer.')) : '', table([ _('SSID'), _('Channel'), _('Signal'), _('Security'), _('BSSID') ], rows) ]);
@@ -938,7 +1042,7 @@ return view.extend({
 			page.className = 'mx-dashboard mx-page-' + selected;
 			nav.replaceChildren.apply(nav, Object.keys(names).map(navItem));
 			title.textContent = _(names[selected]);
-            var views = { overview: overviewPage, setup: setupPage, internet: internetPage, dns: dnsPage, wireless: wirelessPage, mesh: meshPage, clients: clientsPage, vpn: vpnPage, zerotier: zerotierPage, network: networkPage, security: securityPage, traffic: trafficPage, applications: applicationsPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
+            var views = { overview: overviewPage, setup: setupPage, priority: priorityPage, internet: internetPage, dns: dnsPage, wireless: wirelessPage, mesh: meshPage, clients: clientsPage, vpn: vpnPage, zerotier: zerotierPage, network: networkPage, security: securityPage, traffic: trafficPage, applications: applicationsPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
 			content.replaceChildren.apply(content, views[selected]());
 		}
 		draw();
@@ -983,6 +1087,13 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 .mx-btn:hover{background:#edf3e5;border-color:#4c8a69;color:#2c7154}
 .mx-btn.primary:hover{background:#264d3d;color:#fff}
 .mx-dashboard button:focus-visible,.mx-dashboard a:focus-visible,.mx-dashboard input:focus-visible,.mx-dashboard select:focus-visible{outline:2px solid #4c8a69;outline-offset:2px}
+.mx-btn{position:relative;isolation:isolate;overflow:hidden;transform:translateZ(0)}
+.mx-btn-label{position:relative;z-index:1}
+.mx-btn-sheen{position:absolute;inset:0;z-index:0;border-radius:inherit;background:rgba(185,214,106,.24);transform:scaleX(0);transform-origin:left;transition:transform .22s cubic-bezier(.2,.7,.2,1);pointer-events:none}
+.mx-btn.primary .mx-btn-sheen{background:rgba(255,255,255,.14)}
+.mx-btn:hover .mx-btn-sheen,.mx-btn:focus-visible .mx-btn-sheen{transform:scaleX(1)}
+.mx-btn:active{transform:translateY(1px)}
+@media(prefers-reduced-motion:reduce){.mx-btn,.mx-btn-sheen{transition:none}}
 EOF_CSS
 touch /etc/sysupgrade.conf
 for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
