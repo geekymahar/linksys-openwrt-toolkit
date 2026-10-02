@@ -698,6 +698,7 @@ var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ]
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
 var zeroTierRpc = rpc.declare({ object: 'mx.ui', method: 'zerotier', params: [ 'action', 'network' ] });
 var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', zerotier: 'ZeroTier', network: 'Network', security: 'Security', traffic: 'Traffic', applications: 'Applications', led: 'LED', logs: 'Logs', system: 'System', controls: 'Controls' };
+var navIcons = { overview: 'OV', setup: '+', internet: '↔', dns: 'D', wireless: 'W', mesh: 'M', clients: 'C', vpn: 'V', zerotier: 'Z', network: 'N', security: 'S', traffic: 'T', applications: 'A', led: 'L', logs: '≡', system: '⚙', controls: '⋯' };
 var loadError = false;
 function loadStylesheet() {
 	if (document.getElementById('mx-dashboard-style')) return;
@@ -766,7 +767,7 @@ return view.extend({
 				data = values[0] || {}; saved = values[1] || {}; draw();
 			}).catch(function(error) { notice(_('Could not refresh status: ') + String(error), false); }).finally(function() { refreshButton.disabled = false; });
 		}
-		function navItem(key) { return E('button', { 'class': 'mx-nav' + (key === selected ? ' active' : ''), 'type': 'button', 'click': function() { selected = key; draw(); if (key === 'wireless' || key === 'setup') { loadScan('radio2'); loadScan('radio1'); } } }, names[key]); }
+        function navItem(key) { return E('button', { 'class': 'mx-nav' + (key === selected ? ' active' : ''), 'type': 'button', 'click': function() { selected = key; draw(); if (key === 'wireless' || key === 'setup') { loadScan('radio2'); loadScan('radio1'); } } }, [ E('span', { 'class': 'mx-nav-icon', 'aria-hidden': 'true' }, navIcons[key] || '•'), E('span', { 'class': 'mx-nav-label' }, names[key]) ]); }
 		function loadScan(band) { return scanStatus(band).then(function(response) { scans[band] = response || {}; if (selected === 'wireless' || selected === 'setup') draw(); if ((selected === 'wireless' || selected === 'setup') && response && response.state === 'running') window.setTimeout(function() { if (selected === 'wireless' || selected === 'setup') loadScan(band); }, 5000); }).catch(function(error) { notice(_('Scan status unavailable: ') + String(error), false); }); }
 		function startScan(band) { if (!window.confirm(_('Scanning can briefly interrupt an active Wi-Fi backhaul. Continue?'))) return; var task = run(band === 'radio2' ? 'scan_5g' : 'scan_2g'); if (task) return task.then(function() { loadScan(band); }); }
 		function uplinkRows() { return (data.uplinks || []).map(function(u) {
@@ -971,7 +972,17 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 @media(max-width:850px){.mx-dashboard{grid-template-areas:'top' 'side' 'main';grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:minmax(0,1fr)}.mx-global{min-height:48px}.mx-side{padding:0;overflow:auto}.mx-side nav{flex-direction:row}.mx-side-note{display:none}.mx-nav{padding:12px;white-space:nowrap;width:auto}.mx-nav.active:before{display:inline-block}.mx-main{padding:18px}.mx-page-overview .mx-main{padding:0 0 25px}.mx-overview-content{padding:16px}}
 @media(max-width:600px){.mx-global{padding:8px 12px;flex-wrap:wrap}.mx-global-brand{font-size:14px}.mx-global-actions{gap:3px;flex-wrap:wrap}.mx-global-actions .mx-chip{display:none}.mx-hero{grid-template-columns:1fr;gap:24px;text-align:center}.mx-hero-sources{order:2}.mx-hero-center{order:1}.mx-hero-clients{order:3;display:grid;text-align:left}.mx-hero-source{justify-content:center}.mx-hero-rule{max-width:45px}.mx-link-body{grid-template-columns:1fr}.mx-link-symbol{display:none}.mx-link-pairs .mx-kv{grid-template-columns:1fr 1fr}.mx-overview-content>.mx-grid{grid-template-columns:1fr}}
 @media(min-width:851px){.mx-side nav{max-height:calc(100vh - 110px);overflow-y:auto}}
-@media(min-width:851px){.mx-side nav{max-height:calc(100vh - 110px);overflow-y:auto}}
+.mx-nav:before,.mx-nav.active:before{display:none!important}
+.mx-nav{letter-spacing:0;text-transform:none;font-weight:600}
+.mx-nav-icon{width:24px;height:24px;flex:none;display:grid;place-items:center;border:1px solid rgba(203,215,204,.4);border-radius:5px;color:#c8e36c;font:600 10px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
+.mx-nav.active .mx-nav-icon{background:#c8e36c;border-color:#c8e36c;color:#1d2924}
+.mx-nav-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.mx-btn{min-height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:6px;border-color:#cbd7cc;background:#fbfcfa;color:#294437;transition:background-color .15s ease,border-color .15s ease,color .15s ease}
+.mx-btn.primary{background:#315e4a;border-color:#315e4a;color:#fff}
+.mx-btn.accent{background:#e5efcf;border-color:#c4d792;color:#29412e}
+.mx-btn:hover{background:#edf3e5;border-color:#4c8a69;color:#2c7154}
+.mx-btn.primary:hover{background:#264d3d;color:#fff}
+.mx-dashboard button:focus-visible,.mx-dashboard a:focus-visible,.mx-dashboard input:focus-visible,.mx-dashboard select:focus-visible{outline:2px solid #4c8a69;outline-offset:2px}
 EOF_CSS
 touch /etc/sysupgrade.conf
 for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
