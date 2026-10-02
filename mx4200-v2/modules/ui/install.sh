@@ -5,7 +5,12 @@ set -e
 [ -r /usr/share/libubox/jshn.sh ] && command -v jsonfilter >/dev/null 2>&1 && [ -x /usr/sbin/mxm ] || { echo 'MX core/LuCI dependencies are missing' >&2; exit 1; }
 UI_ALREADY_INSTALLED=0
 [ -x /usr/libexec/rpcd/mx.ui ] && UI_ALREADY_INSTALLED=1
-mkdir -p /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view/mx4200
+mkdir -p /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view/mx4200 /www/mx-dashboard
+DASH_STAGE=/www/mx-dashboard/.stage.$$
+mkdir "$DASH_STAGE"
+trap 'rm -rf "$DASH_STAGE"' EXIT
+trap 'exit 1' HUP INT TERM
+DASH_HTTP_CHANGED=0
 cat > /usr/libexec/rpcd/mx.ui.new.$$ <<'EOF_RPC'
 #!/bin/sh
 . /usr/share/libubox/jshn.sh
@@ -87,6 +92,9 @@ overview)
     json_add_string route_device "$ROUTE_DEV"
     json_add_string wan_socket "$(uci -q get network.wan.proto)"
     json_add_string wan_preference "$(uci -q get network.wan.mx_priority)"
+    WAN_PORT_ROLE=wan
+    case "$MODE" in ap) WAN_PORT_ROLE=lan ;; repeater) [ "$(uci -q get network.wan.proto)" = none ] && WAN_PORT_ROLE=lan ;; esac
+    json_add_string wan_port_role "$WAN_PORT_ROLE"
     json_add_int internet_probe "$INTERNET"
     json_add_string lan_address "$(ip -4 addr show dev br-lan 2>/dev/null | awk '/inet /{print $2;exit}')"
     json_add_string management_address "$(uci -q get network.mgmt.ipaddr)"
@@ -862,6 +870,7 @@ return view.extend({
 			var online = !!(u && u.up), details = [ pair(_('Status'), online ? _('Connected') : _('Unavailable')), pair(_('Protocol'), u && u.protocol), pair(_('IP address'), u && u.address) ];
 			if (kind === 'wifi') details.push(pair(_('BSSID'), u && u.bssid), pair(_('Signal'), u && u.signal));
 			else details.push(pair(_('Gateway'), data.gateway));
+            if (kind === 'ethernet') details.push(pair(_('WAN socket role'), data.wan_port_role === 'lan' ? _('LAN bridge') : _('WAN uplink')));
 			if (u && u.dns) details.push(pair(_('DNS server'), u.dns));
 			return E('section', { 'class': 'mx-card mx-link-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, [ E('span', { 'class': 'mx-dot ' + (online ? 'active' : 'down') }), title ]), chip(u && u.selected ? _('Active route') : online ? _('Connected') : _('Unavailable'), online ? 'ok' : 'bad') ]), E('div', { 'class': 'mx-link-body' }, [ E('div', { 'class': 'mx-link-details' }, [ E('div', { 'class': 'mx-link-pairs' }, details), E('div', { 'class': 'mx-link-actions' }, button(actionLabel, actionFn)) ]), E('div', { 'class': 'mx-link-symbol ' + kind }, kind === 'wifi' ? 'Wi-Fi' : kind === 'usb' ? 'USB' : '↔') ]) ]);
 		}
@@ -870,7 +879,7 @@ return view.extend({
 			var mtotal = Number(data.memory_total) || 0, mavail = Number(data.memory_available) || 0;
 			var temp = Number(data.temperature) || 0;
 			return [ overviewHero(), E('div', { 'class': 'mx-overview-content' }, [
-                overviewLinkCard(_('Ethernet WAN'), wan, 'ethernet', _('Configure Internet'), openSetup),
+                overviewLinkCard(_('Ethernet WAN'), wan, 'ethernet', _('Modify'), openSetup),
                 E('div', { 'class': 'mx-overview-uplinks' }, [
                     overviewLinkCard(_('5 GHz repeater · radio2'), primary, 'wifi', _('Choose network'), openSetup),
                     overviewLinkCard(_('2.4 GHz backup · radio1'), backup, 'wifi', _('Backhaul settings'), function() { selected = 'wireless'; draw(); }),
