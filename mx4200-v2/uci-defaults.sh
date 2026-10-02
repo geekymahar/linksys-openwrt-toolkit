@@ -684,21 +684,26 @@ case "$C" in
 4|5|6|7|8|9|10|11|12) set -- red green blue purple orange yellow teal white off;shift $((C-4));/etc/init.d/mxl stop;/usr/bin/mxls "$1";;
 esac
 }
+mact(){
+echo 'Signed update: 1=UI 2=LED 3=Auto 4=Samba 0=Cancel'
+printf 'Choose: ';read -r C
+case "$C" in 1|2|3|4) set -- ui-once once auto-once samba-once;shift $((C-1));/usr/sbin/mxmod "$1"&&echo 'Updated; refresh LuCI.'||echo 'Update failed.';;esac
+}
 menu(){
 while true; do
 echo
 echo '=== MX4200 ==='
 echo "Current mode: $(mode)"
 echo 'Router=own DHCP | Repeater=Wi-Fi uplink | Wired-AP=cable, upstream DHCP'
-echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 8=Wired-AP 0=Exit'
+echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 8=Wired-AP 9=Update modules 0=Exit'
 printf 'Choose: '; read -r C
 case "$C" in
-1) ract;; 2) pact;; 3) /usr/sbin/mxu menu;; 4) bact;; 5) sact;; 6) /root/mxwds;; 7) lact;; 8) aact;; 0) exit;;
+1) ract;; 2) pact;; 3) /usr/sbin/mxu menu;; 4) bact;; 5) sact;; 6) /root/mxwds;; 7) lact;; 8) aact;; 9) mact;; 0) exit;;
 esac
 done
 }
 case "$1" in
-router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; wdstest) /root/mxwds;;
+router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; update) mact;; wdstest) /root/mxwds;;
 help|-h|--help)
 echo 'mx: guided setup; mxstatus: mode/IP/route/LED'
 echo 'mxrouter: saved/baseline router profile'
@@ -708,6 +713,7 @@ echo "mxap: wired AP; upstream DHCP; Management $MGMT_IP (fallback)"
 echo 'mxauto status: mode priorities 1-9, 0=off'
 echo 'mxusb: tether primary/backup/off; mxled: optional LED'
 echo 'mx menu 4: 5G/2.4G backhaul or auto'
+echo 'mx update: fetch signed Dashboard, LED, Auto or Samba module'
 ;;
 '') menu;; *) menu;;
 esac
