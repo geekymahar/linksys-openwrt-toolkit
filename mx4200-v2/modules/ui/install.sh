@@ -3,8 +3,10 @@
 case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mx4200v2*) ;; *) echo 'MX4200 V2/P2 required' >&2; exit 1 ;; esac
 set -e
 [ -r /usr/share/libubox/jshn.sh ] && command -v jsonfilter >/dev/null 2>&1 && [ -x /usr/sbin/mxm ] || { echo 'MX core/LuCI dependencies are missing' >&2; exit 1; }
+UI_ALREADY_INSTALLED=0
+[ -x /usr/libexec/rpcd/mx.ui ] && UI_ALREADY_INSTALLED=1
 mkdir -p /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view/mx4200
-cat > /usr/libexec/rpcd/mx.ui <<'EOF_RPC'
+cat > /usr/libexec/rpcd/mx.ui.new.$$ <<'EOF_RPC'
 #!/bin/sh
 . /usr/share/libubox/jshn.sh
 . /usr/lib/mxc
@@ -206,7 +208,7 @@ wds_test) run /root/mxwds ;;
 auto_status) [ -x /usr/sbin/mxauto ] && run /usr/sbin/mxauto status || reply 0 'Automatic mode module is pending' ;;
 auto_once) [ -x /usr/sbin/mxauto ] && run /usr/sbin/mxauto once || reply 0 'Automatic mode module is pending' ;;
 led_install) run /usr/sbin/mxmod once ;;
-ui_update) run /usr/sbin/mxmod ui-once ;;
+ui_update) MX_UI_RPC_UPDATE=1;export MX_UI_RPC_UPDATE;run /usr/sbin/mxmod ui-once ;;
 led_detect) [ -x /usr/bin/mxls ] && run /usr/bin/mxls detect || reply 0 'LED module is pending' ;;
 led_state) [ -f /tmp/mx4200-led-state ] && run cat /tmp/mx4200-led-state || reply 0 'No LED state yet' ;;
 led_auto) [ -x /etc/init.d/mxl ] || { reply 0 'LED module is pending';exit 0; }; /etc/init.d/mxl enable >/dev/null 2>&1;run /etc/init.d/mxl restart ;;
@@ -226,7 +228,8 @@ save_current) CUR=$(mode);case "$CUR" in router|repeater|wds|ap) psave "$CUR";re
 *) reply 0 'Unsupported action' ;;
 esac
 EOF_RPC
-chmod 755 /usr/libexec/rpcd/mx.ui
+chmod 755 /usr/libexec/rpcd/mx.ui.new.$$
+mv -f /usr/libexec/rpcd/mx.ui.new.$$ /usr/libexec/rpcd/mx.ui
 cat > /usr/sbin/mxscan-ui <<'EOF_SCAN'
 #!/bin/sh
 case "$2" in radio1|radio2) BAND=$2 ;; *) exit 1 ;; esac
@@ -560,7 +563,8 @@ return view.extend({
 				var actions = [];
 				if (saved) actions.push(button(_('Restore'), function() { execute('profile_' + name.replace('-', '_'), true); }));
 				var rank = E('select');
-				for (var n = 0; n <= 9; n++) rank.appendChild(E('option', { 'value': String(n), 'selected': n === (profile.priority || 0) }, String(n)));
+				for (var n = 0; n <= 9; n++) rank.appendChild(E('option', { 'value': String(n) }, String(n)));
+				rank.value = String(profile.priority || 0);
 				var rankCell = name === 'router-baseline' ? E('span', {}, '—') : E('span', {}, [ rank, button(_('Save'), function() { priority(name, rank.value); }) ]);
 				profileTable.appendChild(E('tr', { 'class': 'tr' }, [
 					E('td', { 'class': 'td' }, item[1] + (name === currentMode ? ' (' + _('active') + ')' : '')),
@@ -612,10 +616,10 @@ function loadStylesheet() {
 	var link = document.createElement('link');
 	link.id = 'mx-dashboard-style';
 	link.rel = 'stylesheet';
-	link.href = L.resource('mx4200/dashboard.css') + '?v=3';
+	link.href = L.resource('mx4200/dashboard.css') + '?v=5';
 	link.onerror = function() {
 		var fallback = document.createElement('style');
-		fallback.textContent = '.mx-dashboard{display:grid;grid-template-columns:205px minmax(0,1fr);background:#eef0f7;color:#252b52;font:14px sans-serif}.mx-side{background:#13172d;color:white;padding:20px}.mx-side nav{display:grid;gap:8px}.mx-nav{padding:10px}.mx-main{padding:24px}.mx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.mx-card{background:white;padding:16px;margin:12px 0;border-radius:8px}.mx-card-head{font-weight:bold}.mx-table{width:100%}@media(max-width:700px){.mx-dashboard{grid-template-columns:1fr}}';
+		fallback.textContent = '.mx-dashboard{display:grid;grid-template-areas:"top top" "side main";grid-template-columns:205px minmax(0,1fr);max-width:1600px;margin:0 auto;background:#eef0f7;color:#252b52;font:14px sans-serif}.mx-global{grid-area:top;background:white;padding:12px;display:flex;justify-content:space-between}.mx-side{grid-area:side;background:#13172d;color:white;padding:20px}.mx-side nav{display:grid;gap:8px}.mx-nav{padding:10px}.mx-main{grid-area:main;padding:24px}.mx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.mx-card{background:white;padding:16px;margin:12px 0;border-radius:8px}.mx-card-head{font-weight:bold}.mx-table{width:100%}.mx-hero{background:#201861;color:white;padding:30px;display:flex;justify-content:space-around}@media(max-width:700px){.mx-dashboard{grid-template-areas:"top" "side" "main";grid-template-columns:1fr}}';
 		document.head.appendChild(fallback);
 	};
 	document.head.appendChild(link);
@@ -652,8 +656,9 @@ return view.extend({
 		var title = E('h2', {}, _('Overview'));
 		var refreshButton = button(_('Refresh'), refresh);
 		var page = E('div', { 'class': 'mx-dashboard' }, [
-			E('aside', { 'class': 'mx-side' }, [ E('div', { 'class': 'mx-brand' }, [ 'MX4200', E('small', {}, 'LINKSYS · OPENWRT') ]), nav, E('div', { 'class': 'mx-side-note' }, _('Core modes work without Internet.')) ]),
-			E('main', { 'class': 'mx-main' }, [ E('header', { 'class': 'mx-head' }, [ E('div', {}, [ title, subtitle ]), E('div', { 'class': 'mx-actions' }, [ chip(_('Local dashboard'), 'info'), refreshButton, logoutLink() ]) ]), content, result ])
+			E('header', { 'class': 'mx-global' }, [ E('div', { 'class': 'mx-global-brand' }, [ E('strong', {}, 'MX4200'), E('span', {}, '|'), E('span', {}, _('OpenWrt Dashboard')) ]), E('div', { 'class': 'mx-global-actions' }, [ chip(_('Local dashboard'), 'info'), refreshButton, regularLuciLink(), logoutLink() ]) ]),
+			E('aside', { 'class': 'mx-side' }, [ nav, E('div', { 'class': 'mx-side-note' }, _('Core modes work without Internet.')) ]),
+			E('main', { 'class': 'mx-main' }, [ E('header', { 'class': 'mx-head' }, [ title, subtitle ]), content, result ])
 		]);
 
 		function notice(message, ok) { result.hidden = false; result.textContent = message; result.style.borderColor = ok ? '#9cdece' : '#e2a5b2'; }
@@ -662,6 +667,7 @@ return view.extend({
 			busy = true; notice(_('Working…'), true);
 			return action(name).then(function(response) {
 				notice(value(response.message, _('No response.')), !!response.ok);
+				if (name === 'ui_update' && response.ok) { window.location.reload(); return; }
 				if (response.ok) return refresh();
 			}).catch(function(error) { notice(_('Action failed or connection changed. Reconnect and refresh if needed.') + '\n' + String(error), false); }).finally(function() { busy = false; });
 		}
@@ -680,30 +686,41 @@ return view.extend({
 		}); }
 		function uplinkTable() { return table([ _('Uplink'), _('Link'), _('IPv4'), _('Protocol'), _('Signal'), _('Metric'), _('Route') ], uplinkRows()); }
 		function uplinkDetails() { return E('div', { 'class': 'mx-grid' }, (data.uplinks || []).map(function(u) { return card(u.label, [ pair(_('Link'), u.up ? _('Connected') : _('Unavailable')), pair(_('IPv4'), u.address), pair(_('Device'), u.device), pair(_('DNS'), u.dns), pair(_('BSSID'), u.bssid), pair(_('Signal'), u.signal), pair(_('Received'), formatBytes(u.rx_bytes)), pair(_('Sent'), formatBytes(u.tx_bytes)) ]); })); }
-		function topology() {
-			var active = (data.uplinks || []).filter(function(u) { return u.selected && u.up; });
-			var source = active.length ? active.map(function(u) { return u.label; }).join(' + ') : _('No selected uplink');
-			return E('div', { 'class': 'mx-topology' }, [ E('div', { 'class': 'mx-node' }, [ E('strong', {}, source), E('small', {}, data.internet_probe ? _('Internet probe passed') : _('Internet probe unavailable')) ]), E('div', { 'class': 'mx-connector' }), E('div', { 'class': 'mx-node' }, [ E('strong', {}, value(data.hostname, 'MX4200')), E('small', {}, value(data.mode) + ' · ' + value(data.lan_address)) ]), E('div', { 'class': 'mx-connector' }), E('div', { 'class': 'mx-node' }, [ E('strong', {}, (data.client_count || 0) + ' ' + _('local DHCP clients')), E('small', {}, _('Wi-Fi and Ethernet')) ]) ]);
+		function findUplink(id) { return (data.uplinks || []).filter(function(u) { return u.id === id; })[0] || null; }
+		function openSetup() { selected = 'setup'; draw(); loadScan('radio2'); loadScan('radio1'); }
+		function overviewHero() {
+			var sources = [ [ 'ethernet', _('Ethernet WAN') ], [ 'wifi5', _('5 GHz repeater') ], [ 'wifi2', _('2.4 GHz backup') ], [ 'usb', _('USB tethering') ] ];
+			return E('section', { 'class': 'mx-hero' }, [
+				E('div', { 'class': 'mx-hero-sources' }, sources.map(function(item) { var u = findUplink(item[0]); return E('div', { 'class': 'mx-hero-source' + (u && u.up ? ' online' : '') + (u && u.selected ? ' chosen' : '') }, [ E('span', { 'class': 'mx-hero-light' }), E('span', {}, item[1]), E('span', { 'class': 'mx-hero-rule' }) ]); })),
+				E('div', { 'class': 'mx-hero-center' }, [ E('div', { 'class': 'mx-router-art' }, [ E('div', { 'class': 'mx-router-top' }), E('div', { 'class': 'mx-router-face' }, [ E('span', {}, 'MX'), E('i') ]) ]), E('strong', {}, value(data.hostname, 'MX4200')), E('small', {}, _('Linksys MX4200 V2/P2') + ' · ' + value(data.mode)), E('div', { 'class': 'mx-hero-badges' }, [ E('span', {}, data.internet_probe ? _('● Internet online') : _('● Internet check failed')), E('span', {}, _('↔ ') + value(data.backhaul, _('Automatic backhaul'))) ]) ]),
+				E('div', { 'class': 'mx-hero-clients' }, [ E('div', { 'class': 'mx-hero-client' }, [ E('strong', {}, String(data.client_count || 0)), E('span', {}, _('Local DHCP clients')) ]), E('div', { 'class': 'mx-hero-client' }, [ E('strong', {}, value(data.lan_address, '—')), E('span', {}, _('LAN address')) ]), E('small', {}, _('AP/WDS clients using upstream DHCP may not appear here.')) ])
+			]);
+		}
+		function overviewLinkCard(title, u, kind, actionLabel, actionFn) {
+			var online = !!(u && u.up), details = [ pair(_('Status'), online ? _('Connected') : _('Unavailable')), pair(_('Protocol'), u && u.protocol), pair(_('IP address'), u && u.address) ];
+			if (kind === 'wifi') details.push(pair(_('BSSID'), u && u.bssid), pair(_('Signal'), u && u.signal));
+			else details.push(pair(_('Gateway'), data.gateway));
+			if (u && u.dns) details.push(pair(_('DNS server'), u.dns));
+			return E('section', { 'class': 'mx-card mx-link-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, [ E('span', { 'class': 'mx-dot ' + (online ? 'active' : 'down') }), title ]), chip(u && u.selected ? _('Active route') : online ? _('Connected') : _('Unavailable'), online ? 'ok' : 'bad') ]), E('div', { 'class': 'mx-link-body' }, [ E('div', { 'class': 'mx-link-details' }, [ E('div', { 'class': 'mx-link-pairs' }, details), E('div', { 'class': 'mx-link-actions' }, button(actionLabel, actionFn)) ]), E('div', { 'class': 'mx-link-symbol ' + kind }, kind === 'wifi' ? 'Wi-Fi' : kind === 'usb' ? 'USB' : '↔') ]) ]);
 		}
 		function overviewPage() {
+			var wan = findUplink('ethernet'), primary = findUplink('wifi5'), backup = findUplink('wifi2'), usb = findUplink('usb');
 			var mtotal = Number(data.memory_total) || 0, mavail = Number(data.memory_available) || 0;
-			var flash = (data.flash || '').split(' '), ftotal = Number(flash[0]) || 0, fused = Number(flash[1]) || 0;
 			var temp = Number(data.temperature) || 0;
-			return [ E('div', { 'class': 'mx-grid four' }, [
-				stat(_('Internet probe'), data.internet_probe ? _('Reachable') : _('Not responding'), value(data.gateway, _('No default gateway')), data.internet_probe ? 'active' : 'down'),
-				stat(_('Current mode'), value(data.mode), data.backhaul ? _('Backhaul: ') + data.backhaul : _('Saved modes available below'), 'up'),
-				stat(_('Active route'), value(data.route_device), value(data.gateway, _('No gateway')), data.route_device ? 'active' : 'down'),
-				stat(_('Local DHCP clients'), String(data.client_count || 0), _('Upstream-managed clients may not appear'), 'up')
-			]), sectionTitle(_('Network map')), card(_('Current path'), topology()), sectionTitle(_('Uplink status')), card(_('Interface status · failover'), uplinkTable(), link(_('Manage'), 'admin/services/mx4200')), sectionTitle(_('Device health')),
-			E('div', { 'class': 'mx-grid four' }, [ stat(_('Uptime'), formatUptime(data.uptime), value(data.model)), stat(_('CPU load'), value(data.load), _('1 / 5 / 15 minutes')), stat(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—', _('Reported thermal zone')), stat(_('LED'), value(data.led_state, _('Module pending')), _('Current module state')) ]),
-			E('div', { 'class': 'mx-grid' }, [ card(_('Memory'), [ usage(_('Used'), mtotal - mavail, mtotal), pair(_('Total'), mtotal ? Math.round(mtotal / 1024) + ' MiB' : '—') ]), card(_('Overlay flash'), [ usage(_('Used'), fused, ftotal), pair(_('Available'), Number(flash[2]) ? Math.round(Number(flash[2]) / 1024) + ' MiB' : '—') ]) ]) ];
+			return [ overviewHero(), E('div', { 'class': 'mx-overview-content' }, [
+				overviewLinkCard(_('Ethernet WAN'), wan, 'ethernet', _('Configure Internet'), openSetup),
+				overviewLinkCard(_('5 GHz repeater · radio2'), primary, 'wifi', _('Choose Wi-Fi network'), openSetup),
+				E('div', { 'class': 'mx-grid' }, [ overviewLinkCard(_('2.4 GHz backup · radio1'), backup, 'wifi', _('Backhaul settings'), function() { selected = 'wireless'; draw(); }), overviewLinkCard(_('USB tethering'), usb, 'usb', _('USB controls'), function() { selected = 'controls'; draw(); }) ]),
+				E('div', { 'class': 'mx-grid' }, [ card(_('Router health'), [ pair(_('Uptime'), formatUptime(data.uptime)), pair(_('CPU load · 1 / 5 / 15 min'), data.load), pair(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—'), pair(_('LED'), data.led_state) ]), card(_('Memory and access'), [ usage(_('Memory used'), mtotal - mavail, mtotal), pair(_('Mode'), data.mode), pair(_('OpenWrt'), data.release), E('div', { 'class': 'mx-space' }), regularLuciLink() ]) ])
+			]) ];
 		}
 		function setupRow(label, control, hint) { return E('div', { 'class': 'mx-form-row' }, [ E('label', {}, label), E('div', {}, [ control, hint ? E('small', { 'class': 'mx-muted' }, hint) : '' ]) ]); }
 		function setupInput(label, key, type, hint) {
 			return setupRow(label, E('input', { 'class': 'mx-search', 'type': type || 'text', 'value': setupData[key] || '', 'autocomplete': type === 'password' ? 'new-password' : 'off', 'input': function(ev) { setupData[key] = ev.target.value; } }), hint);
 		}
 		function setupSelect(label, key, choices, hint) {
-			var el = E('select', { 'class': 'mx-search', 'change': function(ev) { setupData[key] = ev.target.value; draw(); } }, choices.map(function(pair) { return E('option', { 'value': pair[0], 'selected': String(setupData[key]) === pair[0] }, pair[1]); }));
+			var el = E('select', { 'class': 'mx-search', 'change': function(ev) { setupData[key] = ev.target.value; draw(); } }, choices.map(function(pair) { return E('option', { 'value': pair[0] }, pair[1]); }));
+			el.value = String(setupData[key] || '');
 			return setupRow(label, el, hint);
 		}
 		function setupScan(band, key, label) {
@@ -742,7 +759,9 @@ return view.extend({
 				fields.push(setupInput(_('5 GHz upstream password'), 'primary_password', 'password', _('Leave empty only for an open or OWE network.')));
 				if (setupData.backup_bssid) {
 					fields.push(setupSecurity('backup_security', _('Backup security')));
-					fields.push(setupRow(_('Use same upstream password'), E('input', { 'type': 'checkbox', 'checked': setupData.backup_same, 'change': function(ev) { setupData.backup_same = ev.target.checked; draw(); } }), _('Available when both bands use the same SSID.')));
+					var samePassword = E('input', { 'type': 'checkbox', 'change': function(ev) { setupData.backup_same = ev.target.checked; draw(); } });
+					samePassword.checked = setupData.backup_same;
+					fields.push(setupRow(_('Use same upstream password'), samePassword, _('Available when both bands use the same SSID.')));
 					if (!setupData.backup_same) fields.push(setupInput(_('2.4 GHz upstream password'), 'backup_password', 'password'));
 				}
 				fields.push(setupInput(_('Client Wi-Fi name'), 'client_ssid', 'text', _('The router broadcasts this name with -RPT-5G and -RPT-2G.')));
@@ -765,7 +784,8 @@ return view.extend({
 			var p = saved.profiles || {};
 			return card(_('Failover and failback'), table([ _('Mode'), _('Saved'), _('Priority'), _('Action') ], [ [ 'router', _('Router') ], [ 'router-baseline', _('First-boot router baseline') ], [ 'repeater', _('Routed repeater') ], [ 'wds', _('WDS repeater') ], [ 'ap', _('Wired AP') ] ].map(function(entry) {
 				var key = entry[0], item = p[key] || {}, rank = E('select', { 'class': 'mx-search' });
-				for (var n = 0; n <= 9; n++) rank.appendChild(E('option', { 'value': String(n), 'selected': n === (item.priority || 0) }, String(n)));
+				for (var n = 0; n <= 9; n++) rank.appendChild(E('option', { 'value': String(n) }, String(n)));
+				rank.value = String(item.priority || 0);
 				var priorityCell = key === 'router-baseline' ? '—' : E('div', { 'class': 'mx-controls' }, [ rank, button(_('Save'), function() { priority(key, Number(rank.value)).then(function(reply) { notice(value(reply.message), !!reply.ok); if (reply.ok) refresh(); }).catch(function(e) { notice(String(e), false); }); }) ]);
 				return [ entry[1] + (data.mode === key ? ' · ' + _('active') : ''), item.saved ? _('Yes') : _('No'), priorityCell, item.saved ? button(_('Restore'), function() { run('profile_' + key.replace('-', '_'), true); }) : '—' ];
 			})), E('div', { 'class': 'mx-controls' }, [ button(_('Save current mode'), function() { run('save_current'); }), link(_('Full manager'), 'admin/services/mx4200') ]));
@@ -794,6 +814,7 @@ return view.extend({
 		function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]) ]; }
 		function controlsPage() { return [ card(_('MX mode controls'), [ E('p', {}, _('Use Set up Internet for a new router, WDS, routed repeater, or wired AP configuration. The SSH mx menu remains available offline.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open native setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), link(_('Open MX Manager'), 'admin/services/mx4200'), terminalLink() ]) ]), sectionTitle(_('USB tethering')), card(_('Connected phone'), E('div', { 'class': 'mx-controls' }, [ button(_('Detect USB'), function() { run('usb_detect'); }), button(_('Primary'), function() { run('usb_primary', true); }), button(_('Backup'), function() { run('usb_backup', true); }), button(_('Off'), function() { run('usb_off', true); }) ])), sectionTitle(_('Diagnostics')), card(_('Local checks'), E('div', { 'class': 'mx-controls' }, [ button(_('WDS/DNS test'), function() { run('wds_test'); }), button(_('Auto priorities'), function() { run('auto_status'); }), button(_('One mode decision'), function() { run('auto_once', true); }) ])) ]; }
 		function draw() {
+			page.className = 'mx-dashboard mx-page-' + selected;
 			nav.replaceChildren.apply(nav, Object.keys(names).map(navItem));
 			title.textContent = _(names[selected]);
 			var views = { overview: overviewPage, setup: setupPage, internet: internetPage, wireless: wirelessPage, clients: clientsPage, vpn: vpnPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
@@ -810,7 +831,7 @@ return view.extend({
 EOF_DASH
 mkdir -p /www/luci-static/resources/mx4200
 cat > /www/luci-static/resources/mx4200/dashboard.css <<'EOF_CSS'
-body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f7}body:has(.mx-dashboard)>header,body:has(.mx-dashboard)>footer,body:has(.mx-dashboard) #tabmenu{display:none!important}body:has(.mx-dashboard) #maincontent{width:100%;max-width:none;margin:0;padding:0}body:has(.mx-dashboard) .mx-dashboard{min-height:100vh;border-radius:0;box-shadow:none}
+body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f7}body:has(.mx-dashboard)>header,body:has(.mx-dashboard)>footer,body:has(.mx-dashboard) #tabmenu{display:none!important}body:has(.mx-dashboard) #maincontent{width:100%;max-width:none;margin:0;padding:0}body:has(.mx-dashboard) .mx-dashboard{min-height:100vh;max-width:1600px;margin:0 auto;border-radius:0;box-shadow:none}
 .mx-dashboard{--mx-ink:#252b52;--mx-muted:#68708c;--mx-cyan:#00b9cd;--mx-blue:#5672ed;--mx-card:#fff;--mx-bg:#eef0f7;--mx-line:#dfe3ee;color:var(--mx-ink);background:var(--mx-bg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:calc(100vh - 8rem);border-radius:14px;overflow:hidden;display:grid;grid-template-columns:205px minmax(0,1fr);box-shadow:0 12px 35px rgba(16,22,58,.12)}
 .mx-dashboard *{box-sizing:border-box}.mx-dashboard a{color:#3061d4}.mx-dashboard button{cursor:pointer;font:inherit}.mx-dashboard h2,.mx-dashboard h3,.mx-dashboard h4,.mx-dashboard p{margin:0}.mx-dashboard h2{font-size:23px}.mx-dashboard h3{font-size:17px}.mx-dashboard h4{font-size:14px}
 .mx-side{background:#13172d;color:#dce3f8;padding:22px 13px;display:flex;flex-direction:column;gap:22px}.mx-brand{font-weight:750;font-size:17px;letter-spacing:.025em;padding:0 13px}.mx-brand small{display:block;font-size:11px;font-weight:500;color:#8e99bc;letter-spacing:.08em;margin-top:3px}.mx-side nav{display:flex;flex-direction:column;gap:4px}.mx-nav{border:0;background:transparent;color:#c8d0e8;text-align:left;border-radius:9px;padding:11px 13px;width:100%;display:flex;align-items:center;gap:11px}.mx-nav:hover,.mx-nav.active{background:#242b4a;color:#fff}.mx-nav.active:before{content:"";width:5px;height:20px;background:var(--mx-cyan);border-radius:4px;margin-left:-13px;margin-right:8px}.mx-side-note{font-size:11px;color:#9aa5c6;padding:0 13px;margin-top:auto}
@@ -820,11 +841,22 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 .mx-form-row{display:grid;grid-template-columns:minmax(130px,34%) minmax(0,1fr);gap:16px;align-items:start;padding:12px 0;border-bottom:1px solid var(--mx-line)}.mx-form-row>label{font-weight:600;padding-top:7px}.mx-form-row>div{display:flex;flex-direction:column;gap:5px}.mx-form-row .mx-search{width:100%;max-width:520px}.mx-form-row input[type=checkbox]{width:18px;height:18px;accent-color:var(--mx-blue);margin:8px 0}.mx-form-row small{line-height:1.4}
 .mx-table-wrap{overflow:auto}.mx-table{width:100%;border-collapse:collapse;min-width:520px}.mx-table th{text-align:left;background:#f7f8fb;color:#69718c;font-size:12px;font-weight:700}.mx-table th,.mx-table td{padding:12px 15px;border-bottom:1px solid var(--mx-line)}.mx-table tr:last-child td{border-bottom:0}.mx-table td small{display:block;color:var(--mx-muted)}.mx-two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}.mx-kv{display:grid;grid-template-columns:minmax(90px,42%) minmax(0,1fr);gap:12px;border-bottom:1px solid var(--mx-line);padding:9px 0}.mx-kv:last-child{border-bottom:0}.mx-kv span:first-child{color:var(--mx-muted)}.mx-kv strong{font-weight:600;overflow-wrap:anywhere}.mx-meter{height:8px;background:#e8ebf4;border-radius:99px;overflow:hidden;margin:8px 0}.mx-meter>i{display:block;height:100%;background:linear-gradient(90deg,var(--mx-cyan),var(--mx-blue));border-radius:99px}.mx-result{white-space:pre-wrap;word-break:break-word;background:#f7f8fb;color:#35405e;border:1px solid var(--mx-line);border-radius:8px;padding:12px;margin-top:14px;max-height:220px;overflow:auto;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.mx-log{height:min(60vh,550px);overflow:auto;white-space:pre-wrap;background:#141b30;color:#d7e2ff;padding:17px;border-radius:8px;font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}.mx-search{border:1px solid var(--mx-line);border-radius:7px;padding:8px 10px;min-height:36px;background:#fff;color:var(--mx-ink)}.mx-controls{display:flex;gap:8px;flex-wrap:wrap}.mx-space{height:16px}.mx-note{background:#e9efff;border-left:3px solid var(--mx-blue);padding:12px 15px;border-radius:5px;color:#33406c}
 @media(max-width:1100px){.mx-grid.four{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:850px){.mx-dashboard{grid-template-columns:1fr}.mx-side{padding:12px 14px;gap:8px}.mx-brand small,.mx-side-note{display:none}.mx-side nav{flex-direction:row;overflow:auto}.mx-nav{white-space:nowrap;width:auto;padding:8px 12px}.mx-nav.active:before{display:none}.mx-main{padding:20px}.mx-topology{grid-template-columns:1fr;gap:7px}.mx-connector{width:2px;height:14px;margin:auto}.mx-two-col{grid-template-columns:1fr}}@media(max-width:600px){.mx-grid,.mx-grid.four{grid-template-columns:1fr}.mx-head{flex-direction:column}.mx-stat-value{font-size:20px}.mx-form-row{grid-template-columns:1fr;gap:4px}}
+.mx-dashboard{grid-template-areas:'top top' 'side main';grid-template-rows:46px minmax(0,1fr);grid-template-columns:225px minmax(0,1fr);background:#e9eaf0;border-radius:0}
+.mx-global{grid-area:top;display:flex;align-items:center;justify-content:space-between;background:#fff;color:#262a38;padding:0 23px;border-bottom:1px solid #e1e2e9;gap:16px;min-width:0}.mx-global-brand{display:flex;align-items:center;gap:17px;white-space:nowrap;font-size:16px}.mx-global-brand strong{font-weight:750;letter-spacing:.025em}.mx-global-brand>span:nth-child(2){color:#777c89}.mx-global-actions{display:flex;gap:9px;align-items:center;white-space:nowrap}.mx-global-actions .mx-btn{border:0;background:transparent;min-height:30px;padding:4px 8px;color:#4a4f67}.mx-global-actions .mx-btn.primary{background:transparent;color:#4a4f67}.mx-global-actions .mx-btn:hover{color:#00aebe;background:#eef9fb}
+.mx-side{grid-area:side;background:#141427;padding:12px 0 20px;gap:0}.mx-side nav{gap:0}.mx-nav{border-radius:0;padding:16px 20px;color:#c9c9d9;text-transform:uppercase;font-size:12px;font-weight:650;letter-spacing:.035em}.mx-nav:before{content:'◌';display:inline-block;width:19px;text-align:center;color:#b6b9d0;font-size:17px;margin-right:7px}.mx-nav:nth-child(2):before{content:'✦'}.mx-nav:nth-child(3):before{content:'↔'}.mx-nav:nth-child(4):before{content:'◉'}.mx-nav:nth-child(5):before{content:'▣'}.mx-nav:nth-child(6):before{content:'⬡'}.mx-nav:nth-child(7):before{content:'◐'}.mx-nav:nth-child(8):before{content:'☷'}.mx-nav:nth-child(9):before{content:'⚙'}.mx-nav:nth-child(10):before{content:'◇'}.mx-nav:hover,.mx-nav.active{background:#0c0c1b;color:#22d8dc}.mx-nav.active:before{content:'◌';width:19px;height:auto;background:none;border-radius:0;margin:0 7px 0 0;color:#22d8dc}.mx-nav.active:nth-child(2):before{content:'✦'}.mx-nav.active:nth-child(3):before{content:'↔'}.mx-nav.active:nth-child(4):before{content:'◉'}.mx-nav.active:nth-child(5):before{content:'▣'}.mx-nav.active:nth-child(6):before{content:'⬡'}.mx-nav.active:nth-child(7):before{content:'◐'}.mx-nav.active:nth-child(8):before{content:'☷'}.mx-nav.active:nth-child(9):before{content:'⚙'}.mx-nav.active:nth-child(10):before{content:'◇'}.mx-side-note{padding:20px;margin-top:auto}
+.mx-main{grid-area:main;background:#e9eaf0;padding:24px;min-width:0}.mx-head{display:block;margin:0 0 18px}.mx-head .mx-sub{margin-top:2px!important}.mx-page-overview .mx-main{padding:0 0 34px}.mx-page-overview .mx-head{display:none}.mx-page-overview .mx-result{margin:20px}.mx-overview-content{padding:20px;display:grid;gap:20px}
+.mx-hero{background:radial-gradient(circle at 54% 35%,#33299a 0,#17104f 45%,#2b238a 100%);color:#fff;min-height:345px;display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.25fr) minmax(170px,1fr);align-items:center;gap:18px;padding:30px clamp(22px,5vw,75px);overflow:hidden}.mx-hero-sources{display:grid;gap:15px}.mx-hero-source{display:flex;align-items:center;gap:9px;color:#9698ca;font-size:13px;white-space:nowrap}.mx-hero-source.online{color:#e6e8ff}.mx-hero-source.chosen{color:#28e0de}.mx-hero-light{display:inline-block;width:8px;height:8px;border-radius:50%;background:#666a9c;flex:none}.mx-hero-source.online .mx-hero-light{background:#21ccbd}.mx-hero-rule{height:1px;flex:1;border-top:1px dashed #7e81bd;margin-left:10px}.mx-hero-source.chosen .mx-hero-rule{border-top:1px solid #23d8de}.mx-hero-center{text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-width:0}.mx-hero-center>strong{font-size:17px;color:#28dedb}.mx-hero-center>small{color:#a8a9dc}.mx-hero-badges{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-top:8px}.mx-hero-badges span{background:#18144e;color:#d4d9ff;border:1px solid #514da1;border-radius:7px;padding:6px 8px;font-size:11px}.mx-router-art{height:108px;width:115px;position:relative;margin:3px 0 8px;filter:drop-shadow(0 10px 15px #08073c)}.mx-router-top{position:absolute;left:18px;top:1px;width:80px;height:23px;border:2px solid #27dcd8;border-radius:50%;background:#1f1a68}.mx-router-face{position:absolute;left:18px;top:12px;width:80px;height:84px;border:2px solid #27dcd8;border-top:0;border-radius:0 0 34px 34px;background:linear-gradient(100deg,#171252,#34309a 48%,#15104c);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:15px;color:#65e6eb;letter-spacing:.2em}.mx-router-face i{height:4px;width:4px;background:#26e3d6;border-radius:50%;box-shadow:10px 0 #26e3d6,-10px 0 #26e3d6}.mx-hero-clients{border-left:1px solid #4b48a8;padding-left:26px;display:grid;gap:19px}.mx-hero-client{display:flex;align-items:center;gap:11px;color:#29dfdc}.mx-hero-client strong{border:1px solid #31d9da;border-radius:50px;min-width:35px;min-height:35px;padding:6px;text-align:center;font-size:13px}.mx-hero-client span{font-size:13px}.mx-hero-clients small{color:#a8a9d5;line-height:1.35}
+.mx-link-card{border-radius:6px;box-shadow:0 5px 18px rgba(22,25,58,.11)}.mx-link-card .mx-card-head{background:#f4f4f8;padding:16px 20px}.mx-link-card .mx-card-head h3{font-weight:500}.mx-link-body{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:24px;align-items:center;padding:18px 20px 21px}.mx-link-details{min-width:0}.mx-link-pairs .mx-kv{grid-template-columns:minmax(125px,40%) minmax(0,1fr);padding:11px 10px}.mx-link-pairs .mx-kv strong{text-align:right;font-weight:500}.mx-link-actions{display:flex;justify-content:center;padding-top:16px}.mx-link-actions .mx-btn{border-radius:30px;padding:7px 22px;min-width:125px}.mx-link-symbol{width:130px;height:130px;border-radius:50%;background:#f0f1f7;color:#333876;display:grid;place-items:center;margin:auto;font-size:54px;font-weight:500}.mx-link-symbol.wifi{font-size:25px;font-weight:750;letter-spacing:-.05em}.mx-link-symbol.usb{font-size:24px;font-weight:750}.mx-overview-content>.mx-grid .mx-link-body{grid-template-columns:minmax(0,1fr)}.mx-overview-content>.mx-grid .mx-link-symbol{display:none}.mx-overview-content>.mx-grid .mx-card{min-width:0}
+@media(max-width:1050px){.mx-hero{padding:24px;grid-template-columns:1fr 1.1fr}.mx-hero-clients{grid-column:1/-1;border-left:0;border-top:1px solid #4b48a8;padding:15px 0 0;display:flex;align-items:center;justify-content:space-between}.mx-hero-clients small{max-width:220px}.mx-link-body{grid-template-columns:minmax(0,1fr) 130px}.mx-link-symbol{width:105px;height:105px}}
+@media(max-width:850px){.mx-dashboard{grid-template-areas:'top' 'side' 'main';grid-template-rows:auto auto minmax(0,1fr);grid-template-columns:minmax(0,1fr)}.mx-global{min-height:48px}.mx-side{padding:0;overflow:auto}.mx-side nav{flex-direction:row}.mx-side-note{display:none}.mx-nav{padding:12px;white-space:nowrap;width:auto}.mx-nav.active:before{display:inline-block}.mx-main{padding:18px}.mx-page-overview .mx-main{padding:0 0 25px}.mx-overview-content{padding:16px}}
+@media(max-width:600px){.mx-global{padding:8px 12px;flex-wrap:wrap}.mx-global-brand{font-size:14px}.mx-global-actions{gap:3px;flex-wrap:wrap}.mx-global-actions .mx-chip{display:none}.mx-hero{grid-template-columns:1fr;gap:24px;text-align:center}.mx-hero-sources{order:2}.mx-hero-center{order:1}.mx-hero-clients{order:3;display:grid;text-align:left}.mx-hero-source{justify-content:center}.mx-hero-rule{max-width:45px}.mx-link-body{grid-template-columns:1fr}.mx-link-symbol{display:none}.mx-link-pairs .mx-kv{grid-template-columns:1fr 1fr}.mx-overview-content>.mx-grid{grid-template-columns:1fr}}
 EOF_CSS
 touch /etc/sysupgrade.conf
 for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
     grep -qxF "$F" /etc/sysupgrade.conf || printf '%s\n' "$F" >> /etc/sysupgrade.conf
 done
-/etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 rm -f /tmp/luci-indexcache.*.json
-(sleep 3; /etc/init.d/uhttpd restart >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
+if [ "$UI_ALREADY_INSTALLED" != 1 ] && [ "${MX_UI_RPC_UPDATE:-0}" != 1 ];then
+    /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    (sleep 3; /etc/init.d/uhttpd restart >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
+fi
