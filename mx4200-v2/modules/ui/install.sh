@@ -206,6 +206,7 @@ wds_test) run /root/mxwds ;;
 auto_status) [ -x /usr/sbin/mxauto ] && run /usr/sbin/mxauto status || reply 0 'Automatic mode module is pending' ;;
 auto_once) [ -x /usr/sbin/mxauto ] && run /usr/sbin/mxauto once || reply 0 'Automatic mode module is pending' ;;
 led_install) run /usr/sbin/mxmod once ;;
+ui_update) run /usr/sbin/mxmod ui-once ;;
 led_detect) [ -x /usr/bin/mxls ] && run /usr/bin/mxls detect || reply 0 'LED module is pending' ;;
 led_state) [ -f /tmp/mx4200-led-state ] && run cat /tmp/mx4200-led-state || reply 0 'No LED state yet' ;;
 led_auto) [ -x /etc/init.d/mxl ] || { reply 0 'LED module is pending';exit 0; }; /etc/init.d/mxl enable >/dev/null 2>&1;run /etc/init.d/mxl restart ;;
@@ -605,23 +606,19 @@ var setupStatus = rpc.declare({ object: 'mx.ui', method: 'setup_status' });
 var action = rpc.declare({ object: 'mx.ui', method: 'action', params: [ 'name' ] });
 var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mode', 'value' ] });
 var names = { overview: 'Overview', setup: 'Set up Internet', internet: 'Internet', wireless: 'Wireless', clients: 'Clients', vpn: 'VPN', led: 'LED', logs: 'Logs', system: 'Advanced settings', controls: 'Controls' };
-var stylesheetPromise;
-
+var loadError = false;
 function loadStylesheet() {
-	if (stylesheetPromise) return stylesheetPromise;
-	stylesheetPromise = new Promise(function(resolve, reject) {
-		var link = document.createElement('link');
-		link.rel = 'stylesheet';
-		link.href = L.resource('mx4200/dashboard.css') + '?v=2';
-		link.onload = resolve;
-		link.onerror = function() {
-			stylesheetPromise = null;
-			link.remove();
-			reject(new Error('MX dashboard stylesheet could not be loaded'));
-		};
-		document.head.appendChild(link);
-	});
-	return stylesheetPromise;
+	if (document.getElementById('mx-dashboard-style')) return;
+	var link = document.createElement('link');
+	link.id = 'mx-dashboard-style';
+	link.rel = 'stylesheet';
+	link.href = L.resource('mx4200/dashboard.css') + '?v=3';
+	link.onerror = function() {
+		var fallback = document.createElement('style');
+		fallback.textContent = '.mx-dashboard{display:grid;grid-template-columns:205px minmax(0,1fr);background:#eef0f7;color:#252b52;font:14px sans-serif}.mx-side{background:#13172d;color:white;padding:20px}.mx-side nav{display:grid;gap:8px}.mx-nav{padding:10px}.mx-main{padding:24px}.mx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.mx-card{background:white;padding:16px;margin:12px 0;border-radius:8px}.mx-card-head{font-weight:bold}.mx-table{width:100%}@media(max-width:700px){.mx-dashboard{grid-template-columns:1fr}}';
+		document.head.appendChild(fallback);
+	};
+	document.head.appendChild(link);
 }
 
 function value(v, fallback) { return v === undefined || v === null || v === '' ? (fallback || '—') : String(v); }
@@ -642,7 +639,10 @@ function regularLuciLink() { return E('a', { 'class': 'mx-btn primary', 'href': 
 function logoutLink() { return E('a', { 'class': 'mx-btn', 'href': L.url('admin/logout') }, _('Log out')); }
 
 return view.extend({
-	load: function() { return loadStylesheet().then(function() { return Promise.all([ overview(), profiles() ]); }); },
+	load: function() {
+		loadStylesheet();
+		return Promise.all([ overview().catch(function() { loadError = true; return {}; }), profiles().catch(function() { loadError = true; return {}; }) ]);
+	},
 	render: function(initial) {
 		var data = initial[0] || {}, saved = initial[1] || {}, selected = 'overview', busy = false;
 		var scans = { radio1: {}, radio2: {} }, logSource = 'system';
@@ -791,7 +791,7 @@ return view.extend({
 			reload();
 			return [ card(_('Recent logs · last 120 lines'), [ E('div', { 'class': 'mx-controls' }, [ button(_('System'), function() { logSource = 'system'; draw(); }, logSource === 'system' ? 'primary' : ''), button(_('Kernel'), function() { logSource = 'kernel'; draw(); }, logSource === 'kernel' ? 'primary' : ''), search, button(_('Refresh logs'), reload) ]), E('div', { 'class': 'mx-space' }), text ]) ];
 		}
-		function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink() ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]) ]; }
+		function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]) ]; }
 		function controlsPage() { return [ card(_('MX mode controls'), [ E('p', {}, _('Use Set up Internet for a new router, WDS, routed repeater, or wired AP configuration. The SSH mx menu remains available offline.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open native setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), link(_('Open MX Manager'), 'admin/services/mx4200'), terminalLink() ]) ]), sectionTitle(_('USB tethering')), card(_('Connected phone'), E('div', { 'class': 'mx-controls' }, [ button(_('Detect USB'), function() { run('usb_detect'); }), button(_('Primary'), function() { run('usb_primary', true); }), button(_('Backup'), function() { run('usb_backup', true); }), button(_('Off'), function() { run('usb_off', true); }) ])), sectionTitle(_('Diagnostics')), card(_('Local checks'), E('div', { 'class': 'mx-controls' }, [ button(_('WDS/DNS test'), function() { run('wds_test'); }), button(_('Auto priorities'), function() { run('auto_status'); }), button(_('One mode decision'), function() { run('auto_once', true); }) ])) ]; }
 		function draw() {
 			nav.replaceChildren.apply(nav, Object.keys(names).map(navItem));
@@ -800,6 +800,7 @@ return view.extend({
 			content.replaceChildren.apply(content, views[selected]());
 		}
 		draw();
+		if (loadError) notice(_('MX status is temporarily unavailable. Check that rpcd is running, then refresh this page.'), false);
 		return page;
 	},
 	handleSave: null,
@@ -825,3 +826,5 @@ for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/s
     grep -qxF "$F" /etc/sysupgrade.conf || printf '%s\n' "$F" >> /etc/sysupgrade.conf
 done
 /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+rm -f /tmp/luci-indexcache.*.json
+(sleep 3; /etc/init.d/uhttpd restart >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &

@@ -110,7 +110,7 @@ else
 DNS_OK=0; nslookup "$DNS_TEST_NAME" 127.0.0.1 >/dev/null 2>&1 && DNS_OK=1
 if ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP1" >/dev/null 2>&1 || ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP2" >/dev/null 2>&1; then
 [ "$DNS_OK" = 1 ] || STATE=dns_fail
-elif [ "$DNS_OK" = 0 ]; then STATE=no_internet
+else STATE=no_internet
 fi
 fi
 fi

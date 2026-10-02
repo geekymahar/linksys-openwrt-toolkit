@@ -1,7 +1,6 @@
 #!/bin/sh
 if [ "$MX_REMOTE_PASS" != 1 ] && { [ -e /etc/mx4200/provisioned ] || [ -e /etc/mx4200/mode ]; };then
 [ -x /etc/init.d/mxmod ] && { /etc/init.d/mxmod disable; /etc/init.d/mxmod stop; }
-[ -x /etc/init.d/mxprovision ] && /etc/init.d/mxprovision disable
 exit 0
 fi
 WIFI_PREFIX='LS-MX4200v2'
@@ -553,17 +552,15 @@ EOF
 chmod 755 /usr/sbin/mxmod
 cat > /usr/sbin/mxfirstboot <<'EOF'
 #!/bin/sh
-mkdir /etc/mx4200/provision-attempted 2>/dev/null||exit 0
-N=0;while [ "$N" -lt 30 ];do
-if [ "$(ubus call network.interface.wan status 2>/dev/null|jsonfilter -e '@.up' 2>/dev/null)" = true ];then
-[ -e /tmp/mxauto-manual ]&&exit 0
-[ "$(cat /etc/mx4200/mode 2>/dev/null)" = router ]||exit 0
-for F in network wireless dhcp firewall system;do cmp -s "/etc/config/$F" "/etc/mx4200/profiles/router-baseline/$F"||exit 0;done
-/usr/sbin/mxmod provision||logger -t mxprovision incomplete
-exit 0
+ready(){ [ -s /etc/mx4200/modules/ui.installed ]&&[ -x /usr/libexec/rpcd/mx.ui ]&&[ -s /www/luci-static/resources/view/mx4200/dashboard.js ]&&[ -s /www/luci-static/resources/mx4200/dashboard.css ]; }
+ready&&{ /etc/init.d/mxprovision disable;exit 0; }
+while :;do
+if ip -4 route show default 2>/dev/null|grep -q '^default ';then
+if mkdir /etc/mx4200/provision-attempted 2>/dev/null;then /usr/sbin/mxmod provision||logger -t mxprovision 'Core handoff unavailable';fi
+ready||/usr/sbin/mxmod ui-once||logger -t mxprovision 'UI retry unavailable'
+ready&&{ /etc/init.d/mxprovision disable;exit 0; }
 fi
-sleep 2
-N=$((N+1))
+sleep 60
 done
 EOF
 chmod 755 /usr/sbin/mxfirstboot
@@ -574,6 +571,7 @@ USE_PROCD=1
 start_service(){ procd_open_instance;procd_set_param command /usr/sbin/mxfirstboot;procd_close_instance; }
 EOF
 chmod 755 /etc/init.d/mxprovision
+/etc/init.d/mxprovision enable
 cat > /usr/sbin/mxm <<'EOF'
 #!/bin/sh
 . /usr/lib/mxc
