@@ -166,6 +166,8 @@ fixture do |root|
   assert(!enabled_services.include?('zerotier enable'), 'ZeroTier remains opt-in')
   assert(uci(root, 'get', 'network.lan.ipaddr') == '192.168.40.1', 'LAN address preserved')
   assert(uci(root, 'get', 'network.@device[0].ports') == 'lan1 lan2 lan3', 'LAN port mapping')
+  assert(uci(root, 'get', 'network.wan.device') == 'wan', 'Physical WAN remains its own interface')
+  assert(uci(root, 'get', 'network.wan.proto') == 'dhcp', 'Router WAN receives upstream DHCP')
   assert(uci(root, 'get', 'wireless.radio2.channel') == '100', 'High-performance default channel')
   assert(uci(root, 'get', 'wireless.default_radio1.device') == 'radio1', '2.4 GHz mapping')
   assert(uci(root, 'show', 'wireless').lines.count { |line| line.end_with?("=wifi-iface\n") } == 3, 'Exactly three initial APs')
@@ -192,6 +194,28 @@ fixture do |root|
   run(root, '/bin/sh', '-c', '. /usr/lib/mxc && configure_access_point test_open "$RADIO_24" lan "LS-MX4200v2" "" none')
   assert(uci(root, 'get', 'wireless.test_open.encryption') == 'none', 'Runtime AP helper')
   puts 'PASS: clean boot, radio/port/firewall parity, idempotence, recovery, preserved WDS, runtime AP helper'
+end
+fixture do |root|
+  run(root, '/etc/uci-defaults/99-router-defaults')
+  profile_directory = File.join(root, 'etc/mx4200/profiles/repeater')
+  FileUtils.mkdir_p(profile_directory)
+  %w[network wireless dhcp firewall system].each do |package|
+    FileUtils.cp(File.join(root, "etc/config/#{package}"), File.join(profile_directory, package))
+  end
+  uci(root, '-c', profile_directory, 'add_list', 'network.@device[0].ports=wan')
+  uci(root, '-c', profile_directory, 'delete', 'network.wan.device')
+  uci(root, '-c', profile_directory, 'set', 'network.wan.proto=none')
+  uci(root, '-c', profile_directory, 'set', 'network.wan6.disabled=1')
+  uci(root, '-c', profile_directory, 'commit', 'network')
+  run(root, '/bin/sh', '-c', 'MX4200_NO_RELOAD=1; . /usr/lib/mxc; load_profile repeater')
+  assert(uci(root, 'get', 'network.wan.device') == 'wan', 'Legacy repeater restores physical WAN device')
+  assert(uci(root, 'get', 'network.wan.proto') == 'dhcp', 'Legacy repeater restores WAN DHCP')
+  assert(!uci(root, 'get', 'network.@device[0].ports').split.include?('wan'), 'Legacy repeater removes WAN from LAN bridge')
+  assert(uci(root, 'get', 'network.wan.mx_priority') == 'wifi', 'Legacy repeater defaults to Wi-Fi primary')
+  assert(uci(root, 'get', 'network.wan.metric') == '20', 'Legacy repeater keeps wired WAN as backup')
+  assert(!uci(root, 'show', 'network').lines.any? { |line| line.start_with?('network.wan6.disabled=') }, 'Legacy repeater re-enables WAN IPv6')
+  assert(!File.read(File.join(ROOT, 'files/root/mxr')).include?('client LAN port 2=wired uplink'), 'Repeater setup no longer offers WAN-as-LAN')
+  puts 'PASS: old WAN-as-LAN repeater profiles normalize to dedicated DHCP WAN and LAN ports'
 end
 fixture do |root|
   run(root, '/etc/uci-defaults/99-router-defaults')

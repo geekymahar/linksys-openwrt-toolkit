@@ -49,6 +49,8 @@ Existing mode/provision markers skip destructive default configuration. That bra
 
 Router, routed repeater, true WDS and wired AP workflows remain available through `mx`. Saved profiles, priority-based automatic switching, authenticated backhaul scanning/BSSID rediscovery, WDS association-based switching, routed mwan3 probes, USB primary/backup selection, DNS fallback and management-subnet overlap avoidance are retained. The revision-3 LED behavior and Samba-only account page are embedded, not downloaded.
 
+In routed-repeater mode the physical WAN socket is always a separate DHCP uplink; it is never offered as a LAN bridge port. LAN1-LAN3 remain client LAN ports, and Wi-Fi is the preferred uplink by default. You can still choose wired WAN as the preferred Internet path. When loading an older saved repeater profile that bridged WAN into LAN, the profile loader repairs it to a dedicated WAN interface. Wired-AP mode intentionally continues to bridge all Ethernet ports, including WAN, into the upstream LAN.
+
 VPN packages, firewall zones, ingress rules, forwarding sysctls, Tailscale integration and HTTPS redirection are retained. The firmware does not invent Tailscale authentication, WireGuard peers, OpenVPN connections, Samba shares/accounts, disk mounts or PBR policies.
 
 ### Service Startup Policy

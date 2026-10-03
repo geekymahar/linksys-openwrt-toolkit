@@ -3,30 +3,19 @@
 TARGET="$1"
 case "$TARGET" in wds | repeater) ;; *) exit 1 ;; esac
 date +%s >/tmp/mxauto-manual
-WAN_PORT=wan
 WAN_PREF=wifi
 if [ "$TARGET" = repeater ]; then
+    echo 'The physical WAN socket remains a dedicated DHCP WAN; it is not bridged into client LAN.'
+    echo 'Routed uplinks use mwan3 probes when available; Wi-Fi is preferred by default.'
     while true; do
-        printf 'WAN socket: 1=client LAN port 2=wired uplink [2]: '
+        printf 'Preferred uplink: 1=wired WAN 2=Wi-Fi repeater [2]: '
         read -r answer || exit 1
-        case "$answer" in 1)
-            WAN_PORT=lan
+        case "$answer" in '' | 2) break ;; 1)
+            WAN_PREF=wan
             break
             ;;
-        '' | 2) break ;; esac
+        esac
     done
-    if [ "$WAN_PORT" = wan ]; then
-        echo 'Routed uplinks use mwan3 Internet probes; route metrics prefer healthy links.'
-        while true; do
-            printf 'Preferred uplink: 1=wired WAN 2=Wi-Fi repeater [2]: '
-            read -r answer || exit 1
-            case "$answer" in '' | 2) break ;; 1)
-                WAN_PREF=wan
-                break
-                ;;
-            esac
-        done
-    fi
 fi
 scan_band() {
     radio=$1
@@ -244,17 +233,11 @@ else
 fi
 uci -q delete network.usbwan
 if [ "$TARGET" = repeater ]; then
-    if [ "$WAN_PORT" = lan ]; then
-        bridge_wan_port || {
-            echo 'Could not add WAN socket to LAN bridge'
-            exit 1
-        }
-    else
-        set_option network.wan.device=wan
-        set_option network.wan.proto=dhcp
-        uci -q delete network.wan6.disabled
-    fi
     set_option network.wan.mx_priority="$WAN_PREF"
+    configure_repeater_wan || {
+        echo 'Could not configure the physical WAN socket as a separate DHCP uplink'
+        exit 1
+    }
     for selected_value in wwanp wwanb; do
         set_option network.$selected_value=interface
         set_option network.$selected_value.proto=dhcp

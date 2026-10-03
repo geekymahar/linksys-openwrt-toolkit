@@ -23,6 +23,28 @@ bridge_wan_port() {
     fi
 }
 
+configure_repeater_wan() {
+    bridge_section="$(find_bridge_section br-lan)"
+    [ -n "$bridge_section" ] || return 1
+    uci -q delete "${bridge_section}.ports" || return 1
+    for lan_port in $LAN_PORTS; do
+        uci add_list "${bridge_section}.ports=$lan_port" || return 1
+    done
+    set_option "network.wan.device=$WAN_DEVICE" || return 1
+    set_option network.wan.proto=dhcp || return 1
+    uci -q delete network.wan6.disabled || true
+
+    case "$(uci -q get network.wan.mx_priority)" in
+        wan)
+            set_option "network.wan.metric=$METRIC_WAN_PREFERRED"
+            ;;
+        *)
+            set_option network.wan.mx_priority=wifi || return 1
+            set_option "network.wan.metric=$METRIC_WAN_BACKUP"
+            ;;
+    esac
+}
+
 configure_bridge_dhcp_client() {
     set_option network.lan=interface
     set_option network.lan.device=br-lan

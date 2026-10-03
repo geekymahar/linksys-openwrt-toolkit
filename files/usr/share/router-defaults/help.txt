@@ -16,8 +16,10 @@ ROUTER: mx router / mxrouter
 
 REPEATER: mx repeater / mxrepeater
   Routed repeater keeps its own LAN/DHCP and works with an ordinary upstream
-  AP. True WDS bridges upstream DHCP and needs compatible four-address support
-  on that AP. WDS reserves lan1 and the Management SSID for local management.
+  AP. Its physical WAN socket is always a separate DHCP uplink; LAN1-LAN3 stay
+  in the client LAN. Wi-Fi is preferred by default, with wired WAN available as
+  an uplink preference. True WDS bridges upstream DHCP and needs compatible
+  four-address support on that AP. WDS reserves lan1 and Management Wi-Fi.
   Setup scans primary 5 GHz, with four passes and a bounded radio/DFS wait.
   The DFS wait shows elapsed and remaining time. In GB, channel 100 is DFS and
   can require CAC before radio2 scans or starts its AP. The current ath11k PHY

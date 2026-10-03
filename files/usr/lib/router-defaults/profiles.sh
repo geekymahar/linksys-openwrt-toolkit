@@ -27,8 +27,8 @@ load_profile() {
     done
     profile_mode="$profile_name"
     [ "$profile_name" = router-baseline ] && profile_mode=router
-    if [ "$profile_mode" = repeater ] && [ "$(uci -q get network.wan.proto)" = none ]; then
-        bridge_wan_port || return 1
+    if [ "$profile_mode" = repeater ]; then
+        configure_repeater_wan || return 1
         uci commit network || return 1
         save_profile repeater
     fi
