@@ -16,6 +16,7 @@ DHCP_LEASETIME='12h'
 MODE_2G='HE40'
 MODE_5G='HE80'
 MODE_5G_HIGH='HE80'
+CHANNEL_5G_HIGH='116'
 DNS_FALLBACK_1='1.1.1.1'
 DNS_FALLBACK_2='1.0.0.1'
 DNS_TEST_NAME='openwrt.org'
@@ -39,6 +40,7 @@ DHCP_LEASETIME='$DHCP_LEASETIME'
 MODE_2G='$MODE_2G'
 MODE_5G='$MODE_5G'
 MODE_5G_HIGH='$MODE_5G_HIGH'
+CHANNEL_5G_HIGH='$CHANNEL_5G_HIGH'
 DNS_FALLBACK_1='$DNS_FALLBACK_1'
 DNS_FALLBACK_2='$DNS_FALLBACK_2'
 DNS_TEST_NAME='$DNS_TEST_NAME'
@@ -94,7 +96,7 @@ rb() {
 for R in radio0 radio1 radio2;do u wireless.$R.country="$COUNTRY";u wireless.$R.disabled=0;done
 u wireless.radio1.band=2g;u wireless.radio1.htmode="$MODE_2G"
 u wireless.radio0.band=5g;u wireless.radio0.htmode="$MODE_5G"
-u wireless.radio2.band=5g;u wireless.radio2.htmode="$MODE_5G_HIGH"
+u wireless.radio2.band=5g;u wireless.radio2.htmode="$MODE_5G_HIGH";u wireless.radio2.channel="$CHANNEL_5G_HIGH"
 }
 ap(){ local S=$1 E=${6:-sae-mixed};u wireless.$S=wifi-iface;u wireless.$S.device="$2";u wireless.$S.mode=ap;u wireless.$S.network="$3";u wireless.$S.ssid="$4";u wireless.$S.encryption="$E";nk "$E"&&u wireless.$S.key="$5";u wireless.$S.disabled=0;}
 ca(){ for X in system network wireless dhcp firewall;do uci commit $X;done;}

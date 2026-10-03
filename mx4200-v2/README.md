@@ -53,7 +53,7 @@ The selected LED installer adds `/etc/mx4200/led.conf`, `/usr/bin/mxls`, `/usr/b
 | DNS fallback servers | `1.1.1.1`, `1.0.0.1` |
 | DNS test name | `openwrt.org` |
 
-The script maps **`radio1` to 2.4 GHz**, **`radio0` to 5 GHz 2×2**, and **`radio2` to 5 GHz 4×4**. It enables all three radios with `HE40` on 2.4 GHz and `HE80` on each 5 GHz radio. In repeater modes, `radio2` is the primary upstream backhaul; `radio1` can be its 2.4 GHz backup. `radio0` supplies a separate 5 GHz client AP.
+The script maps **`radio1` to 2.4 GHz**, **`radio0` to 5 GHz 2×2**, and **`radio2` to 5 GHz 4×4**. It enables all three radios with `HE40` on 2.4 GHz and `HE80` on each 5 GHz radio; `radio2` defaults to channel 116, which may require DFS channel-availability checking before its AP starts. In repeater modes, `radio2` is the primary upstream backhaul; `radio1` can be its 2.4 GHz backup. `radio0` supplies a separate 5 GHz client AP.
 
 On first boot in router mode, the script creates three **open**, passwordless APs: `LS-MX4200v2` on `radio1`, `LS-MX4200v2-5GHz` on `radio0`, and `LS-MX4200v2-Max` on `radio2`. It does not set a root password. Wired-AP client Wi-Fi uses WPA2/WPA3 mixed (`sae-mixed`). In either repeater mode, the two client APs use the selected primary upstream's security type; open or OWE upstream means no client AP password. WDS Management Wi-Fi remains separately password-protected with `sae-mixed`.
 
