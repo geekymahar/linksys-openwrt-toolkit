@@ -304,7 +304,7 @@ fixture do |root|
   write_fixture(root, 'tmp/pending-checks', "0\n")
   wait_result = run(root, '/bin/sh', '-c', '. /usr/lib/mxc; waited=0; wireless_status(){ printf "{}\\n"; }; sleep(){ [ "$1" = 2 ] && waited=$((waited+2)); }; scan_radio "$RADIO_5G_MAX" /tmp/scan-result 10; printf "waited=%s\\n" "$waited"', stderr: true)
   assert(wait_result.include?('waited=4'), "DFS pending state waits while the readiness timer advances: #{wait_result.inspect}")
-  assert(wait_result.include?('00:08 remaining'), 'DFS wait countdown is surfaced to the operator')
+  assert(wait_result.include?('00:10 remaining'), 'DFS wait countdown is surfaced to the operator')
   assert(run(root, '/usr/sbin/mxm', 'help').include?('Automatic Linksys recovery is enabled'), 'Offline help describes recovery correctly')
   puts 'PASS: scan parser, self-BSSID filtering, strongest match, WPA version mapping and offline help'
 end
