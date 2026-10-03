@@ -27,7 +27,7 @@ The active implementation is the root `files/` tree. ImageBuilder places it dire
 
 Edit `files/etc/router-defaults/config` before building. Every value comes from the existing project; no credentials were invented. It is trusted shell configuration, stored with mode `0600`. Keep it private when supplying real keys: anything baked into firmware remains recoverable from that firmware, regardless of filesystem permissions.
 
-The existing mapping is **radio1 = 2.4 GHz**, **radio0 = separate 5 GHz client AP**, **radio2 = high-performance 5 GHz / primary backhaul**. Defaults remain `GB`, `HE40`/`HE80`, radio2 channel `116`, router LAN `192.168.40.1/24`, preferred management `172.23.247.1/24`, and the three `LS-MX4200v2` SSIDs. Initial router APs remain open and there is no configured root password, preserving existing behavior. Set a root password and secure Wi-Fi before deployment.
+The existing mapping is **radio1 = 2.4 GHz**, **radio0 = separate 5 GHz client AP**, **radio2 = high-performance 5 GHz / primary backhaul**. Defaults remain `GB`, `HE40`/`HE80`, radio2 channel `100`, router LAN `192.168.40.1/24`, preferred management `172.23.247.1/24`, and the three `LS-MX4200v2` SSIDs. Initial router APs remain open and there is no configured root password, preserving existing behavior. Set a root password and secure Wi-Fi before deployment. Repeater setup scans for the upstream AP and displays that AP's actual channel; the radio2 DFS wait has an elapsed/remaining timer and a bounded timeout.
 
 Newly entered credentials, saved profiles and selected modes remain protected runtime state under `/etc/mx4200`. They are not copied into a second defaults file. The old `base.conf` and `led.conf` paths are compatibility shims that source the central config.
 

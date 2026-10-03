@@ -41,6 +41,16 @@ wireless_status() {
     ubus call network.wireless status 2>/dev/null
 }
 
+radio_waiting_for_channel() {
+    radio=$1
+    status_json=$(wireless_status)
+    [ "$(printf '%s\n' "$status_json" | jsonfilter -e "@.$radio.pending" 2>/dev/null)" = true ] && return 0
+    for interface in $(printf '%s\n' "$status_json" | jsonfilter -e "@.$radio.interfaces[*].ifname" 2>/dev/null); do
+        [ "$(ubus call "hostapd.$interface" get_status 2>/dev/null | jsonfilter -e '@.status' 2>/dev/null)" = DFS ] && return 0
+    done
+    return 1
+}
+
 radio_interface() {
     wireless_status | jsonfilter -e "@.$1.interfaces[0].ifname" 2>/dev/null
 }
@@ -58,11 +68,22 @@ scan_radio() {
     if [ "$radio" = "$RADIO_5G_MAX" ]; then
         scan_delay=8
         wait_elapsed=0
-        while [ "$(wireless_status | jsonfilter -e "@.$radio.pending" 2>/dev/null)" = true ] && [ $wait_elapsed -lt "$WAIT_MAX" ]; do
-            [ $wait_elapsed = 0 ] && echo 'Waiting for 5GHz radio/DFS...' >&2
+        while radio_waiting_for_channel "$radio" && [ "$wait_elapsed" -lt "$WAIT_MAX" ]; do
+            if [ $((wait_elapsed % 10)) -eq 0 ]; then
+                wait_remaining=$((WAIT_MAX - wait_elapsed))
+                printf '\r5 GHz radio DFS wait: %02d:%02d elapsed, %02d:%02d remaining (Ctrl-C cancels)' \
+                    "$((wait_elapsed / 60))" "$((wait_elapsed % 60))" \
+                    "$((wait_remaining / 60))" "$((wait_remaining % 60))" >&2
+            fi
             sleep 2
             wait_elapsed=$((wait_elapsed + 2))
         done
+        if radio_waiting_for_channel "$radio"; then
+            printf '\n5 GHz radio did not become available within %s seconds; scan cancelled.\n' "$WAIT_MAX" >&2
+            return 1
+        fi
+        [ "$wait_elapsed" -eq 0 ] || printf '\r5 GHz radio ready after %02d:%02d; starting scan.                         \n' \
+            "$((wait_elapsed / 60))" "$((wait_elapsed % 60))" >&2
     fi
     while [ $scan_pass -le 4 ]; do
         echo "Scan pass $scan_pass/4..." >&2

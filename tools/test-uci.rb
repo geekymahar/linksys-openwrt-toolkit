@@ -20,10 +20,11 @@ def write_fixture(root, relative, text, executable: false)
   File.chmod(0755, path) if executable
 end
 
-def run(root, *arguments, success: true)
+def run(root, *arguments, success: true, stderr: false)
   output, errors, result = Open3.capture3('chroot', root, '/bin/busybox', 'env',
     'PATH=/usr/sbin:/usr/bin:/sbin:/bin', 'LD_LIBRARY_PATH=/tmp/router-defaults-native/lib', *arguments)
   assert(result.success? == success, "#{arguments.join(' ')}: #{output}#{errors}")
+  output = "#{output}#{errors}" if stderr
   output.strip
 end
 
@@ -165,7 +166,7 @@ fixture do |root|
   assert(!enabled_services.include?('zerotier enable'), 'ZeroTier remains opt-in')
   assert(uci(root, 'get', 'network.lan.ipaddr') == '192.168.40.1', 'LAN address preserved')
   assert(uci(root, 'get', 'network.@device[0].ports') == 'lan1 lan2 lan3', 'LAN port mapping')
-  assert(uci(root, 'get', 'wireless.radio2.channel') == '116', 'High-performance channel')
+  assert(uci(root, 'get', 'wireless.radio2.channel') == '100', 'High-performance default channel')
   assert(uci(root, 'get', 'wireless.default_radio1.device') == 'radio1', '2.4 GHz mapping')
   assert(uci(root, 'show', 'wireless').lines.count { |line| line.end_with?("=wifi-iface\n") } == 3, 'Exactly three initial APs')
   assert(uci(root, 'get', 'firewall.mx_vpn_in.dest_port') == '1194 51820 41641', 'VPN ingress ports')
@@ -284,11 +285,25 @@ fixture do |root|
               Signal: -75 dBm
               Encryption: WPA2 PSK (CCMP)
   SCAN
+  write_fixture(root, 'usr/bin/jsonfilter', <<~SHELL, executable: true)
+    #!/bin/sh
+    case "$2" in
+        *pending*)
+            checks=$(cat /tmp/pending-checks 2>/dev/null || echo 0)
+            checks=$((checks + 1))
+            printf '%s\n' "$checks" >/tmp/pending-checks
+            [ "$checks" -le 2 ] && echo true || echo false
+            ;;
+    esac
+  SHELL
   scanned = run(root, '/bin/sh', '-c', '. /usr/lib/mxc; sleep(){ :; }; scan_radio "$RADIO_5G_MAX" /tmp/scan-result; cat /tmp/scan-result')
   assert(scanned.include?('02:00:00:00:00:02'), 'Strongest non-local BSSID selected')
   assert(!scanned.include?('02:00:00:00:00:01') && !scanned.include?('02:00:00:00:00:03'), 'Self BSSID and weaker duplicate filtered')
   assert(run(root, '/bin/sh', '-c', '. /usr/lib/mxc; scan_encryption_to_uci "WPA2 PSK (CCMP)"') == 'psk2', 'WPA2 security mapping')
   assert(run(root, '/bin/sh', '-c', '. /usr/lib/mxc; scan_encryption_to_uci "WPA PSK (CCMP)"') == 'psk', 'WPA1 is not misidentified as WPA2')
+  wait_result = run(root, '/bin/sh', '-c', '. /usr/lib/mxc; waited=0; wireless_status(){ printf "{}\\n"; }; sleep(){ [ "$1" = 2 ] && waited=$((waited+2)); }; scan_radio "$RADIO_5G_MAX" /tmp/scan-result 10; printf "waited=%s\\n" "$waited"', stderr: true)
+  assert(wait_result.include?('waited=4'), 'DFS pending state waits while the readiness timer advances')
+  assert(wait_result.include?('00:08 remaining'), 'DFS wait countdown is surfaced to the operator')
   assert(run(root, '/usr/sbin/mxm', 'help').include?('Automatic Linksys recovery is enabled'), 'Offline help describes recovery correctly')
   puts 'PASS: scan parser, self-BSSID filtering, strongest match, WPA version mapping and offline help'
 end
