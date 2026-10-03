@@ -306,6 +306,7 @@ fixture do |root|
   assert(wait_result.include?('waited=4'), "DFS pending state waits while the readiness timer advances: #{wait_result.inspect}")
   assert(wait_result.include?('00:10 remaining'), 'DFS wait countdown is surfaced to the operator')
   assert(run(root, '/usr/sbin/mxm', 'help').include?('Automatic Linksys recovery is enabled'), 'Offline help describes recovery correctly')
+  assert(run(root, '/usr/sbin/mxm', 'help').include?('kernel disabled the extension channel'), 'Offline help explains current HE160 limitation')
   puts 'PASS: scan parser, self-BSSID filtering, strongest match, WPA version mapping and offline help'
 end
 if File.file?(File.join(ROOT, 'mx4200-v2/embedded-release/manifest.sig'))

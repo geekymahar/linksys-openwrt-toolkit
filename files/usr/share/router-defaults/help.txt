@@ -19,6 +19,10 @@ REPEATER: mx repeater / mxrepeater
   AP. True WDS bridges upstream DHCP and needs compatible four-address support
   on that AP. WDS reserves lan1 and the Management SSID for local management.
   Setup scans primary 5 GHz, with four passes and a bounded radio/DFS wait.
+  The DFS wait shows elapsed and remaining time. In GB, channel 100 is DFS and
+  can require CAC before radio2 scans or starts its AP. The current ath11k PHY
+  advertises HE160, but OpenWrt 25.12.5 rejected HE160 on channel 100 because
+  the kernel disabled the extension channel; radio2 therefore remains HE80.
   Select a 2.4 GHz backup by reusing the upstream name/key or scanning another.
   The upstream key and MX4200 client Wi-Fi key are separate inputs; WDS also
   asks for a separate Management key. Keys must meet the displayed validation.

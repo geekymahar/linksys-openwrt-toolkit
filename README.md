@@ -29,6 +29,8 @@ Edit `files/etc/router-defaults/config` before building. Every value comes from 
 
 The existing mapping is **radio1 = 2.4 GHz**, **radio0 = separate 5 GHz client AP**, **radio2 = high-performance 5 GHz / primary backhaul**. Defaults remain `GB`, `HE40`/`HE80`, radio2 channel `100`, router LAN `192.168.40.1/24`, preferred management `172.23.247.1/24`, and the three `LS-MX4200v2` SSIDs. Initial router APs remain open and there is no configured root password, preserving existing behavior. Set a root password and secure Wi-Fi before deployment. Repeater setup scans for the upstream AP and displays that AP's actual channel; the radio2 DFS wait has an elapsed/remaining timer and a bounded timeout.
 
+On the live MX4200 V2 with OpenWrt 25.12.5 and country `GB`, the radio advertises HE160 capability, but an AP test using `HE160` on channel 100 failed: hostapd requested a 600-second DFS CAC and the kernel rejected the extension channel as disabled. The reliable default therefore remains HE80. Enabling HE160 needs a regulatory/driver-supported 160 MHz channel plan; changing the country code or forcing disabled channels is not a safe workaround.
+
 Newly entered credentials, saved profiles and selected modes remain protected runtime state under `/etc/mx4200`. They are not copied into a second defaults file. The old `base.conf` and `led.conf` paths are compatibility shims that source the central config.
 
 Changing central defaults on a running router does not automatically overwrite live UCI settings or saved profiles. Use `mx` or LuCI for normal changes, then save a profile. Do not rerun initialization to apply routine configuration changes.
