@@ -36,5 +36,104 @@ EOF_INIT
 chmod 755 /etc/init.d/mxauto
 /etc/init.d/mxauto enable
 /etc/init.d/mxauto restart >/dev/null 2>&1 || true
+cat > /usr/sbin/mxroutehealth <<'EOF_ROUTE_HEALTH'
+#!/bin/sh
+. /usr/lib/mxc
+BACKUP=/etc/mx4200/mwan3-repeater.backup
+STATE=/etc/mx4200/mwan3-repeater.state
+POLICY=mx4200_repeater
+SIG=/tmp/mx4200-mwan3-signature
+
+setopt(){ V=$(uci -q get "$1" 2>/dev/null || true);[ "$V" = "$2" ] || uci set "$1=$2"; }
+active(){ P=$(uci -q get "network.$1.proto" 2>/dev/null || true);[ -n "$P" ] && [ "$P" != none ]; }
+metric(){ V=$(uci -q get "network.$1.metric" 2>/dev/null || true);case "$V" in ''|*[!0-9]*) V=10;;esac;printf '%s' "$V"; }
+signature(){ printf 'repeater';for I in wan wwanp wwanb usbwan;do printf '|%s:%s:%s' "$I" "$(uci -q get "network.$I.proto" 2>/dev/null || true)" "$(metric "$I")";done; }
+rule_name(){ for R in $(uci -q show mwan3 2>/dev/null | sed -n 's/^mwan3\.\([^.=]*\)=rule$/\1/p');do [ "$(uci -q get "mwan3.$R.dest_ip" 2>/dev/null)" = 0.0.0.0/0 ] && [ "$(uci -q get "mwan3.$R.family" 2>/dev/null)" != ipv6 ] && { printf '%s' "$R";return;};done; }
+
+restore(){
+	[ -s "$BACKUP" ] || return 0
+	cp "$BACKUP" /etc/config/mwan3 || return 1
+	WAS_ENABLED=$(sed -n '1p' "$STATE" 2>/dev/null)
+	/etc/init.d/mwan3 restart >/dev/null 2>&1 || true
+	if [ "$WAS_ENABLED" != 1 ];then /etc/init.d/mwan3 stop >/dev/null 2>&1 || true;/etc/init.d/mwan3 disable >/dev/null 2>&1 || true;fi
+	rm -f "$BACKUP" "$STATE" "$SIG"
+}
+
+configure(){
+	[ -x /etc/init.d/mwan3 ] && [ -f /etc/config/mwan3 ] || return 0
+	RULE=$(rule_name);[ -n "$RULE" ] || { logger -t mxroutehealth 'No IPv4 default rule in mwan3';return 1; }
+	NEW_SIG=$(signature)
+	[ "$(cat "$SIG" 2>/dev/null)" = "$NEW_SIG" ] && [ "$(uci -q get "mwan3.$RULE.use_policy" 2>/dev/null)" = "$POLICY" ] && return 0
+	if [ ! -s "$BACKUP" ];then
+		OLD_POLICY=$(uci -q get "mwan3.$RULE.use_policy" 2>/dev/null || true)
+		ENABLED=0;for LINK in /etc/rc.d/S*mwan3;do [ -e "$LINK" ] && ENABLED=1;done
+		cp /etc/config/mwan3 "$BACKUP" || return 1
+		printf '%s\n%s\n' "$ENABLED" "$OLD_POLICY" > "$STATE";chmod 600 "$BACKUP" "$STATE"
+	fi
+	OLD_POLICY=$(sed -n '2p' "$STATE" 2>/dev/null)
+	[ -n "$OLD_POLICY" ] || OLD_POLICY=balanced
+	MEMBERS=''
+	for I in wan wwanp wwanb usbwan;do
+		active "$I" || continue
+		if [ "$(uci -q get "mwan3.$I" 2>/dev/null || true)" != interface ];then uci set "mwan3.$I=interface";fi
+		setopt "mwan3.$I.enabled" 1
+		setopt "mwan3.$I.family" ipv4
+		setopt "mwan3.$I.reliability" 1
+		setopt "mwan3.$I.count" 1
+		setopt "mwan3.$I.timeout" 2
+		setopt "mwan3.$I.interval" 10
+		setopt "mwan3.$I.down" 1
+		setopt "mwan3.$I.up" 1
+		uci -q delete "mwan3.$I.track_ip"
+		uci add_list "mwan3.$I.track_ip=$DNS_FALLBACK_1"
+		uci add_list "mwan3.$I.track_ip=$WDS_TEST_IP2"
+		MEMBER=mxroute_$I
+		uci -q delete "mwan3.$MEMBER"
+		uci set "mwan3.$MEMBER=member"
+		uci set "mwan3.$MEMBER.interface=$I"
+		uci set "mwan3.$MEMBER.metric=$(metric "$I")"
+		uci set "mwan3.$MEMBER.weight=1"
+		MEMBERS="$MEMBERS $MEMBER"
+	done
+	[ -n "$MEMBERS" ] || { logger -t mxroutehealth 'No active routed uplinks';return 1; }
+	uci -q delete "mwan3.$POLICY"
+	uci set "mwan3.$POLICY=policy"
+	for MEMBER in $MEMBERS;do uci add_list "mwan3.$POLICY.use_member=$MEMBER";done
+	uci set "mwan3.$POLICY.last_resort=default"
+	for R in $(uci -q show mwan3 2>/dev/null | sed -n 's/^mwan3\.\([^.=]*\)=rule$/\1/p');do
+		FAMILY=$(uci -q get "mwan3.$R.family" 2>/dev/null || true)
+		[ "$FAMILY" = ipv6 ] && continue
+		[ "$(uci -q get "mwan3.$R.use_policy" 2>/dev/null)" = "$OLD_POLICY" ] || continue
+		uci set "mwan3.$R.use_policy=$POLICY"
+		[ -n "$FAMILY" ] || uci set "mwan3.$R.family=ipv4"
+	done
+	uci set "mwan3.$RULE.use_policy=$POLICY"
+	uci commit mwan3 || return 1
+	/etc/init.d/mwan3 enable >/dev/null 2>&1 || true
+	/etc/init.d/mwan3 restart >/dev/null 2>&1 || return 1
+	printf '%s\n' "$NEW_SIG" > "$SIG"
+}
+
+case "$1" in
+service)
+	while :;do
+		if [ "$(mode)" = repeater ];then configure || true;else restore || true;fi
+		sleep 10
+	done ;;
+once) [ "$(mode)" = repeater ] && configure || restore ;;
+*) echo 'mxroutehealth: service|once';exit 1 ;;
+esac
+EOF_ROUTE_HEALTH
+chmod 755 /usr/sbin/mxroutehealth
+cat > /etc/init.d/mxroutehealth <<'EOF_ROUTE_INIT'
+#!/bin/sh /etc/rc.common
+START=97
+STOP=11
+USE_PROCD=1
+start_service(){ procd_open_instance;procd_set_param command /usr/sbin/mxroutehealth service;procd_set_param respawn 3600 5 5;procd_close_instance; }
+EOF_ROUTE_INIT
+chmod 755 /etc/init.d/mxroutehealth
+/etc/init.d/mxroutehealth enable
+/etc/init.d/mxroutehealth restart >/dev/null 2>&1 || true
 touch /etc/sysupgrade.conf
-for F in /usr/sbin/mxauto /etc/init.d/mxauto;do grep -qxF "$F" /etc/sysupgrade.conf || echo "$F" >> /etc/sysupgrade.conf;done
+for F in /usr/sbin/mxauto /etc/init.d/mxauto /usr/sbin/mxroutehealth /etc/init.d/mxroutehealth;do grep -qxF "$F" /etc/sysupgrade.conf || echo "$F" >> /etc/sysupgrade.conf;done

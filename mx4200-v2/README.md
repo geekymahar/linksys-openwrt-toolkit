@@ -77,7 +77,7 @@ Routed repeater setup defaults the physical `wan` socket to **wired WAN** and th
 | Wired WAN, when preferred | 3 |
 | Wired WAN, when Wi-Fi is preferred | 20 |
 
-Lower metrics are preferred. The metrics choose among available routes; they are **not a continuous Internet-health check** for routed repeater mode. An associated 5 GHz STA with a broken upstream Internet path may retain the preferred route until netifd withdraws it or another mode is selected.
+Lower metrics are preferred. When the optional Auto module and `mwan3` are installed, `mxroutehealth` applies an IPv4 mwan3 policy in routed-repeater mode. It probes active uplinks every 10 seconds using `1.1.1.1` and `8.8.8.8`, prefers the lower-metric healthy route, and uses the main routing table as last resort if all probes fail. This lets 2.4 GHz `wwanb` take over from 5 GHz `wwanp` when 5 GHz still has a route but no Internet. The helper saves the current mwan3 config and restores it when leaving routed-repeater mode. If mwan3 is unavailable, the original netifd metric behavior remains.
 
 ### Management address and overlap avoidance
 
@@ -95,7 +95,7 @@ The scan text is mapped to OpenWrt encryption names (`none`, `owe`, `sae`, `sae-
 
 `mxb` runs locally once a second in repeater/WDS modes. About every 30 seconds, it can rescan a disconnected configured STA and update its BSSID/channel if the same SSID appears elsewhere. This provides dynamic upstream BSSID rediscovery without connecting to one of the router's own BSSIDs. Manual `mx` Backhaul choices can enable auto, primary only, or backup only.
 
-In **WDS**, `mxb` keeps only the selected STA enslaved to `br-lan`. If the primary association disappears and the backup is associated, it switches to backup and requests DHCP renewal. When the primary association stays present for about 30 seconds, it switches back. In **routed repeater**, both configured DHCP STA interfaces can exist and netifd uses the route metrics above; `mxb` mainly monitors association and performs BSSID rediscovery. A configured 2.4 GHz path can carry traffic while `radio2` is waiting on DFS, but this depends on the backup being associated and having a working route. The initial interactive 5 GHz scan itself waits for the radio before the backup-selection prompt.
+In **WDS**, `mxb` keeps only the selected STA enslaved to `br-lan`. If the primary association disappears and the backup is associated, it switches to backup and requests DHCP renewal. When the primary association stays present for about 30 seconds, it switches back. WDS remains association-based; it does not probe Internet on the inactive bridge member because testing it would require switching the bridge and interrupting clients. In **routed repeater**, both configured DHCP STA interfaces can exist; `mwan3` health tracking uses their route metrics, while `mxb` monitors association and performs BSSID rediscovery. A configured 2.4 GHz path can carry traffic while `radio2` is waiting on DFS, provided the backup is associated and has a working route. The initial interactive 5 GHz scan itself waits for the radio before the backup-selection prompt.
 
 `mxw` supplies the WDS diagnostic result: `RED` if there is no connected upstream STA, `ORANGE` if 4-address bridging, DHCP/default route, or Internet ping fails, `YELLOW` if the upstream DNS check fails, and `GREEN` if all checks pass. `mxwds` prints the upstream bridge address, route, DNS, and that health result.
 

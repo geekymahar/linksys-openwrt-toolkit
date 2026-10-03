@@ -433,7 +433,8 @@ I="$(find_usb)"
 echo "USB: ${I:-none}"
 LAST=''; [ -f /etc/mx4200/usb.conf ] && . /etc/mx4200/usb.conf && LAST="$LAST_ROLE"
 [ -n "$LAST" ] && echo "USB role: $LAST"
-echo '1=Previous 2=Primary 3=Backup 4=Off 0=Cancel'
+echo '1=Restore last USB role  2=Primary route  3=Backup route'
+echo '4=Disable USB tethering  0=Cancel'
 printf 'Choose: '; read -r C
 case "$C" in
 1) [ -n "$LAST" ] && apply_usb "$LAST" || echo 'No saved role' ;;
@@ -591,7 +592,8 @@ echo "Mode: $CUR"
 echo
 pex router && psum router
 echo
-echo '1=Previous 2=Baseline 0=Cancel';[ "$CUR" = router ]&&echo '3=Keep current'
+echo '1=Saved router profile  2=First-boot baseline  0=Cancel'
+[ "$CUR" = router ]&&echo '3=Save current router settings'
 printf 'Choose: '; read -r C
 case "$C" in
 1) pex router && { sil router; priority router; pload router; } || echo 'No router profile' ;;
@@ -601,14 +603,16 @@ esac
 }
 pact(){
 echo
-echo '1=WDS (upstream WDS, same DHCP) 2=Routed (any AP, own DHCP/NAT) 0=Cancel'
+echo '1=WDS: bridge/upstream DHCP; upstream AP must support WDS'
+echo '2=Routed repeater: own LAN/DHCP; works with a normal Wi-Fi AP'
+echo '0=Cancel'
 printf 'Choose: '; read -r C
 case "$C" in 1) T=wds;; 2) T=repeater;; *) return;; esac
 echo
 if pex "$T"; then
 psum "$T"
 echo
-echo '1=Previous saved settings 2=New scan/setup 0=Cancel'
+echo '1=Use saved settings  2=Scan and enter Wi-Fi credentials  0=Cancel'
 printf 'Choose: '; read -r A
 case "$A" in
 1) sil "$T"; priority "$T"; pload "$T" ;;
@@ -620,7 +624,9 @@ exec /root/mxr "$T"
 fi
 }
 aact(){
-echo '1=Previous wired AP 2=New wired AP 3=Change Management password 0=Cancel'
+echo '1=Restore saved wired AP'
+echo '2=Configure wired AP; Ethernet ports become LAN'
+echo '3=Change isolated Management Wi-Fi password  0=Cancel'
 printf 'Choose: ';read -r C
 case "$C" in
 1) pex ap && { sil ap;priority ap;pload ap; } || echo 'No AP profile' ;;
@@ -633,7 +639,8 @@ esac
 }
 bact(){
 case "$(mode)" in wds|repeater);;*) echo 'Repeater required.';return;;esac
-echo '1=Auto 2=Primary 3=Backup 0=Cancel'
+echo '1=Auto: primary plus configured backup'
+echo '2=5 GHz primary only  3=2.4 GHz backup only  0=Cancel'
 printf 'Choose: ';read -r C
 case "$C" in 1) /usr/sbin/mxb auto;;2) /usr/sbin/mxb primary;;3) /usr/sbin/mxb backup;;esac
 }
@@ -672,7 +679,9 @@ printf 'Choose: '; read -r C
 [ "$C" = 1 ] && { /usr/sbin/mxmod once && echo 'LED module installed.' || echo 'LED module download unavailable.'; }
 return
 fi
-echo '1=Detect 2=Auto 3=State 4=Red 5=Green 6=Blue 7=Purple 8=Orange 9=Yellow 10=Teal 11=White 12=Off 0=Cancel'
+echo '1=Detect hardware  2=Automatic  3=Show state'
+echo '4-11=Force color (red, green, blue, purple, orange, yellow, teal, white)'
+echo '12=LED off  0=Cancel'
 printf 'Choose: '; read -r C
 case "$C" in
 1) /usr/bin/mxls detect;;
@@ -682,7 +691,7 @@ case "$C" in
 esac
 }
 mact(){
-echo 'Signed update: 1=LED 2=Auto 3=Samba 0=Cancel'
+echo 'Signed module install: 1=LED 2=Auto failover 3=Samba users 0=Cancel'
 printf 'Choose: ';read -r C
 case "$C" in 1|2|3) set -- once auto-once samba-once;shift $((C-1));/usr/sbin/mxmod "$1"&&echo 'Updated.'||echo 'Update failed.';;esac
 }
@@ -692,7 +701,9 @@ echo
 echo '=== MX4200 ==='
 echo "Current mode: $(mode)"
 echo 'Router=own DHCP | Repeater=Wi-Fi uplink | Wired-AP=cable, upstream DHCP'
-echo '1=Router 2=Repeater 3=USB 4=Backhaul 5=Status 6=WDS/DNS 7=LED 8=Wired-AP 9=Update modules 0=Exit'
+echo '1=Router profiles  2=Repeater/WDS  3=USB tether  4=Wi-Fi backhaul'
+echo '5=Status  6=WDS diagnostics (WDS mode)  7=LED  8=Wired AP'
+echo '9=Signed module install/update  0=Exit'
 printf 'Choose: '; read -r C
 case "$C" in
 1) ract;; 2) pact;; 3) /usr/sbin/mxu menu;; 4) bact;; 5) sact;; 6) /root/mxwds;; 7) lact;; 8) aact;; 9) mact;; 0) exit;;
@@ -702,14 +713,14 @@ done
 case "$1" in
 router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; update) mact;; wdstest) /root/mxwds;;
 help|-h|--help)
-echo 'mx: guided setup; mxstatus: mode/IP/route/LED'
-echo 'mxrouter: saved/baseline router profile'
-echo 'mxrepeater: WDS/routed; scan 5G, optional 2.4G backup'
-echo '  Routed WAN: LAN or uplink, then priority'
-echo "mxap: wired AP; upstream DHCP; Management $MGMT_IP (fallback)"
-echo 'mxauto status: mode priorities 1-9, 0=off'
-echo 'mxusb: tether primary/backup/off; mxled: optional LED'
-echo 'mx menu 4: 5G/2.4G backhaul or auto'
+echo 'mx: guided setup | mxstatus: current mode, route, IPs, and LED'
+echo 'mxrouter: restore saved/baseline router or save current router'
+echo 'mxrepeater: WDS (upstream WDS required) or routed (normal AP)'
+echo '  scans 5 GHz primary and optional 2.4 GHz backup; routed WAN: LAN/uplink'
+echo "mxap: wired AP; all Ethernet ports LAN; upstream provides DHCP"
+echo 'mxusb: choose USB tether primary/backup/off | mxled: LED controls'
+echo 'mxauto status: show saved-mode failover priorities, if installed'
+echo 'mx menu 4: auto (both), 5 GHz only, or 2.4 GHz only backhaul'
 echo 'mx update: fetch signed LED, Auto or Samba module'
 ;;
 '') menu;; *) menu;;
