@@ -5,12 +5,9 @@ set -e
 [ -r /usr/share/libubox/jshn.sh ] && command -v jsonfilter >/dev/null 2>&1 && [ -x /usr/sbin/mxm ] || { echo 'MX core/LuCI dependencies are missing' >&2; exit 1; }
 UI_ALREADY_INSTALLED=0
 [ -x /usr/libexec/rpcd/mx.ui ] && UI_ALREADY_INSTALLED=1
-mkdir -p /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view/mx4200 /www/mx-dashboard
-DASH_STAGE=/www/mx-dashboard/.stage.$$
-mkdir "$DASH_STAGE"
-trap 'rm -rf "$DASH_STAGE"' EXIT
+mkdir -p /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d /www/luci-static/resources/view/mx4200
 trap 'exit 1' HUP INT TERM
-DASH_HTTP_CHANGED=0
+UI_HTTP_CHANGED=0
 cat > /usr/libexec/rpcd/mx.ui.new.$$ <<'EOF_RPC'
 #!/bin/sh
 . /usr/share/libubox/jshn.sh
@@ -664,7 +661,7 @@ cat > /usr/share/luci/menu.d/mx-ui.json <<'EOF_MENU'
   "admin/mx4200": {
     "title": "MX Dashboard",
     "order": 1,
-    "action": { "type": "view", "path": "mx4200/dashboard" },
+        "action": { "type": "view", "path": "mx4200/dashboard" },
     "depends": { "acl": [ "mx-ui" ] }
   },
   "admin/services/mx4200": {
@@ -766,9 +763,16 @@ cat > /www/luci-static/resources/view/mx4200/dashboard.js <<'EOF_DASH'
 'use strict';
 'require rpc';
 'require view';
+'require uci';
+'require fs';
+'require ui';
 
 var overview = rpc.declare({ object: 'mx.ui', method: 'overview' });
 var profiles = rpc.declare({ object: 'mx.ui', method: 'profiles' });
+var callSystemBoard = rpc.declare({ object: 'system', method: 'board', expect: {} });
+var callSystemInfo = rpc.declare({ object: 'system', method: 'info', expect: {} });
+var callNetworkInterfaceDump = rpc.declare({ object: 'network.interface', method: 'dump', expect: { interface: [] } });
+var callWirelessStatus = rpc.declare({ object: 'network.wireless', method: 'status', expect: {} });
 var logs = rpc.declare({ object: 'mx.ui', method: 'logs', params: [ 'source' ] });
 var scanStatus = rpc.declare({ object: 'mx.ui', method: 'scan_status', params: [ 'band' ] });
 var submitSetup = rpc.declare({ object: 'mx.ui', method: 'setup', params: [ 'config' ] });
@@ -778,14 +782,42 @@ var priority = rpc.declare({ object: 'mx.ui', method: 'priority', params: [ 'mod
 var zeroTierRpc = rpc.declare({ object: 'mx.ui', method: 'zerotier', params: [ 'action', 'network' ] });
 var dnsProxyRpc = rpc.declare({ object: 'mx.ui', method: 'dns_proxy', params: [ 'action', 'provider' ] });
 var names = { overview: 'Internet', dns: 'DNS', wireless: 'Wireless', mesh: 'Mesh / Backhaul', clients: 'Clients', vpn: 'VPN', network: 'Network', traffic: 'Flow Control', security: 'Security', applications: 'Applications', system: 'System', setup: 'Set up Internet', priority: 'Mode Priority', internet: 'WAN Details', zerotier: 'ZeroTier', led: 'LED', logs: 'Logs', controls: 'Controls' };
-var navIcons = { overview: '⌂', setup: '＋', priority: '⇅', internet: '↗', dns: '≋', wireless: '⌁', mesh: '⤭', clients: '◉', vpn: '⬡', zerotier: 'Z', network: '↔', security: '⛨', traffic: '▥', applications: '▦', led: '◐', logs: '≡', system: '⚙', controls: '⋯' };
+var navIcons = {
+    overview: [ 'M3 10 12 3l9 7', 'M5 9v12h14V9', 'M9 21v-7h6v7' ], setup: [ 'M12 3v18', 'M3 12h18', 'M7 7l10 10', 'M17 7 7 17' ], priority: [ 'M7 4v16', 'M4 7l3-3 3 3', 'M17 20V4', 'M14 17l3 3 3-3' ], internet: [ 'M4 12h15', 'M13 6l6 6-6 6' ], dns: [ 'M4 6h16', 'M4 12h16', 'M4 18h16', 'M8 4v4', 'M16 10v4' ],
+    wireless: [ 'M3 8a14 14 0 0 1 18 0', 'M6 12a9 9 0 0 1 12 0', 'M9 16a4 4 0 0 1 6 0', 'M12 20h.01' ], mesh: [ 'M5 5h5v5H5z', 'M14 5h5v5h-5z', 'M9.5 14h5v5h-5z', 'M10 7.5h4', 'M7.5 10v3l4.5 1' ], clients: [ 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M3 20a6 6 0 0 1 12 0', 'M16 5a3 3 0 0 1 0 6', 'M18 14a5 5 0 0 1 3 5' ],
+    vpn: [ 'M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z', 'm9 12 2 2 4-4' ], zerotier: [ 'M12 3v18', 'M3 12h18', 'M5 5l14 14', 'M19 5 5 19', 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z' ], network: [ 'M4 7h7v5H4z', 'M13 12h7v5h-7z', 'M11 9h3v5h-3z', 'M7.5 12v4h5.5' ], security: [ 'M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11z', 'M9 12h6' ],
+    traffic: [ 'M4 19V9', 'M10 19V5', 'M16 19v-7', 'M22 19H2' ], applications: [ 'M4 4h7v7H4z', 'M13 4h7v7h-7z', 'M4 13h7v7H4z', 'M13 13h7v7h-7z' ], led: [ 'M9 18h6', 'M10 22h4', 'M8 14a6 6 0 1 1 8 0c-1 1-1 2-1 4h-6c0-2 0-3-1-4z' ], logs: [ 'M5 5h14', 'M5 12h14', 'M5 19h14', 'M2 5h.01', 'M2 12h.01', 'M2 19h.01' ],
+    system: [ 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z', 'M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 2.9-.2-.1a1.7 1.7 0 0 0-1.9.3l-.1.1h-3.4l-.1-.2a1.7 1.7 0 0 0-1.4-1l-.2-.1-1.7-2.9.1-.2a1.7 1.7 0 0 0-.3-1.8l-.1-.2v-3.4l.2-.1a1.7 1.7 0 0 0 1-1.4l.1-.2 2.9-1.7.2.1a1.7 1.7 0 0 0 1.8-.3l.2-.1h3.4l.1.2a1.7 1.7 0 0 0 1.4 1l.2.1 1.7 2.9-.1.2a1.7 1.7 0 0 0 .3 1.8l.1.2v3.4' ], controls: [ 'M4 6h16', 'M4 12h16', 'M4 18h16', 'M8 4v4', 'M15 10v4', 'M10 16v4' ]
+};
 var loadError = false;
+function navIcon(name) {
+    return E('svg', { 'class': 'mx-nav-icon', 'viewBox': '0 0 24 24', 'fill': 'none', 'stroke': 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' }, (navIcons[name] || []).map(function(path) { return E('path', { 'd': path }); }));
+}
+function loadServices() {
+    return Promise.all([
+        fs.list('/etc/init.d').catch(function() { return []; }),
+        fs.stat('/usr/bin/wg').catch(function() { return fs.stat('/usr/sbin/wg').catch(function() { return null; }); }),
+        fs.stat('/usr/bin/opkg').catch(function() { return fs.stat('/sbin/apk').catch(function() { return null; }); })
+    ]).then(function(values) {
+        var scripts = {};
+        (values[0] || []).forEach(function(entry) { scripts[entry.name || entry] = true; });
+        return {
+            adguard: !!(scripts.AdGuardHome || scripts.adguardhome), adblock: !!scripts['adblock-fast'],
+            doh: !!scripts['https-dns-proxy'], openvpn: !!scripts.openvpn,
+            tailscale: !!scripts.tailscale, tor: !!scripts.tor, zerotier: !!scripts.zerotier,
+            sqm: !!scripts.sqm, upnp: !!scripts.miniupnpd, samba: !!scripts.samba4,
+            ddns: !!scripts.ddns, ttyd: !!scripts.ttyd, mwan3: !!scripts.mwan3,
+            pbr: !!scripts.pbr, nlbwmon: !!scripts.nlbwmon, vnstat: !!scripts.vnstat,
+            wireguard: !!values[1], packageManager: !!values[2]
+        };
+    });
+}
 function loadStylesheet() {
 	if (document.getElementById('mx-dashboard-style')) return;
 	var link = document.createElement('link');
 	link.id = 'mx-dashboard-style';
 	link.rel = 'stylesheet';
-    link.href = L.resource('mx4200/dashboard.css') + '?v=6';
+    link.href = L.resource('mx4200/dashboard.css') + '?v=7';
 	link.onerror = function() {
 		var fallback = document.createElement('style');
 		fallback.textContent = '.mx-dashboard{display:grid;grid-template-areas:"top top" "side main";grid-template-columns:205px minmax(0,1fr);max-width:1600px;margin:0 auto;background:#eef0f7;color:#252b52;font:14px sans-serif}.mx-global{grid-area:top;background:white;padding:12px;display:flex;justify-content:space-between}.mx-side{grid-area:side;background:#13172d;color:white;padding:20px}.mx-side nav{display:grid;gap:8px}.mx-nav{padding:10px}.mx-main{grid-area:main;padding:24px}.mx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}.mx-card{background:white;padding:16px;margin:12px 0;border-radius:8px}.mx-card-head{font-weight:bold}.mx-table{width:100%}.mx-hero{background:#201861;color:white;padding:30px;display:flex;justify-content:space-around}@media(max-width:700px){.mx-dashboard{grid-template-areas:"top" "side" "main";grid-template-columns:1fr}}';
@@ -801,9 +833,10 @@ function link(label, path) { return E('a', { 'href': L.url.apply(L, path.split('
 function card(title, body, extra) { return E('section', { 'class': 'mx-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, title), extra || '' ]), E('div', { 'class': 'mx-card-body' }, body) ]); }
 function nativeToolCard(title, description, path) { return card(title, [ E('p', {}, description), E('div', { 'class': 'mx-controls' }, [ link(_('Open LuCI settings'), path) ]) ]); }
 function pair(label, data) { return E('div', { 'class': 'mx-kv' }, [ E('span', {}, label), E('strong', {}, value(data)) ]); }
+function livePair(label, data, key) { var row = pair(label, data); row.lastElementChild.setAttribute('data-live', key); return row; }
 function table(headers, rows) { return E('div', { 'class': 'mx-table-wrap' }, E('table', { 'class': 'mx-table' }, [ E('thead', {}, E('tr', {}, headers.map(function(h) { return E('th', {}, h); }))), E('tbody', {}, rows.length ? rows.map(function(row) { return E('tr', {}, row.map(function(cell) { return E('td', {}, cell); })); }) : E('tr', {}, E('td', { 'colspan': String(headers.length), 'class': 'mx-empty' }, _('No data reported.')))) ])); }
 function percent(n) { return Math.max(0, Math.min(100, n)); }
-function usage(label, used, total) { var p = total > 0 ? percent(Math.round(100 * used / total)) : 0; return E('div', {}, [ pair(label, p + '%'), E('div', { 'class': 'mx-meter' }, E('i', { 'style': 'width:' + p + '%' })) ]); }
+function usage(label, used, total) { var p = total > 0 ? percent(Math.round(100 * used / total)) : 0, valueRow = pair(label, p + '%'), fill = E('i', { 'style': 'width:' + p + '%' }); valueRow.lastElementChild.setAttribute('data-live', 'memory-percent'); fill.setAttribute('data-live-width', 'memory-percent'); return E('div', {}, [ valueRow, E('div', { 'class': 'mx-meter' }, fill) ]); }
 function stat(label, main, detail, state) { return E('div', { 'class': 'mx-card mx-stat' }, [ E('div', { 'class': 'mx-stat-label' }, label), E('div', { 'class': 'mx-stat-value' }, main), E('div', { 'class': 'mx-stat-detail' }, [ state ? E('span', { 'class': 'mx-dot ' + state }) : '', detail ]) ]); }
 function sectionTitle(title) { return E('h3', { 'class': 'mx-section-title' }, title); }
 function terminalLink() { return E('a', { 'href': L.url('admin/services/ttyd/ttyd'), 'target': '_blank', 'rel': 'noopener noreferrer' }, _('Open browser terminal')); }
@@ -815,10 +848,61 @@ function logoutLink() { return E('a', { 'class': 'mx-btn', 'href': L.url('admin/
 return view.extend({
 	load: function() {
 		loadStylesheet();
-		return Promise.all([ overview().catch(function() { loadError = true; return {}; }), profiles().catch(function() { loadError = true; return {}; }) ]);
+        return Promise.all([
+            overview().catch(function() { loadError = true; return {}; }),
+            profiles().catch(function() { loadError = true; return {}; }),
+            callSystemBoard().catch(function() { return {}; }),
+            callSystemInfo().catch(function() { return {}; }),
+            callNetworkInterfaceDump().catch(function() { return { interface: [] }; }),
+            callWirelessStatus().catch(function() { return {}; }),
+            uci.load('wireless').catch(function() {}),
+            uci.load('network').catch(function() {}),
+            loadServices().catch(function() { return {}; })
+        ]).then(function(values) {
+            return { overview: values[0], profiles: values[1], board: values[2], system: values[3], interfaces: values[4], wireless: values[5], services: values[8] };
+        });
 	},
 	render: function(initial) {
-		var data = initial[0] || {}, saved = initial[1] || {}, selected = 'overview', busy = false;
+        var data = initial.overview || {}, saved = initial.profiles || {}, services = initial.services || {}, selected = 'overview', busy = false;
+        var board = initial.board || {}, systemInfo = initial.system || {}, interfaceDump = [];
+        var memory = systemInfo.memory || {}, release = board.release || {};
+        data.model = board.model || data.model;
+        data.release = release.description || data.release;
+        data.kernel = systemInfo.kernel || data.kernel;
+        data.uptime = systemInfo.uptime || data.uptime;
+        data.load = Array.isArray(systemInfo.load) ? systemInfo.load.join(' ') : data.load;
+                data.kernel = systemInfo.kernel || data.kernel;
+        data.memory_total = memory.total || data.memory_total;
+        data.memory_available = memory.available || memory.free || data.memory_available;
+        var sectionByUplink = { ethernet: 'wan', wifi5: data.mode === 'wds' ? 'wdsp' : 'wwanp', wifi2: data.mode === 'wds' ? 'wdsb' : 'wwanb', usb: 'usbwan' };
+        function updateInterfaceData(items) {
+            interfaceDump = Array.isArray(items) ? items : items && items.interface || [];
+            var lan = interfaceDump.filter(function(item) { return item.interface === 'lan'; })[0];
+            if (lan && lan['ipv4-address'] && lan['ipv4-address'][0]) {
+                var address = lan['ipv4-address'][0], mask = String(address.mask || '');
+                data.lan_address = address.address + (/^\d+$/.test(mask) ? '/' + mask : '');
+            }
+            (data.uplinks || []).forEach(function(uplink) {
+                var live = interfaceDump.filter(function(item) { return item.interface === sectionByUplink[uplink.id]; })[0];
+                if (!live) return;
+                uplink.uptime = live.uptime;
+                uplink.up = live.up ? 1 : 0;
+                uplink.protocol = live.proto || uplink.protocol;
+                if (live.up && live['ipv4-address'] && live['ipv4-address'][0]) uplink.address = live['ipv4-address'][0].address || uplink.address;
+                if (live.up && live['dns-server'] && live['dns-server'].length) uplink.dns = live['dns-server'].join(' ');
+                if (uplink.selected && live.route && live.route.length) data.gateway = live.route[0].nexthop || data.gateway;
+            });
+        }
+        function updateRadioData(radioStatus) {
+            var wirelessIfaces = uci.sections('wireless', 'wifi-iface') || [];
+            data.radios = (uci.sections('wireless', 'wifi-device') || []).map(function(radio) {
+                var name = radio['.name'], runtime = radioStatus[name] || {};
+                var ssids = wirelessIfaces.filter(function(iface) { return iface.device === name && iface.mode === 'ap' && iface.disabled !== '1'; }).map(function(iface) { return iface.ssid; }).filter(Boolean);
+                return { name: name, band: radio.band || radio.hwmode, enabled: !!runtime.up && radio.disabled !== '1', channel: runtime.channel || radio.channel, frequency: runtime.frequency, width: radio.htmode, txpower: runtime.txpower || radio.txpower, ssids: ssids };
+            });
+        }
+        updateInterfaceData(initial.interfaces);
+        updateRadioData(initial.wireless || {});
 		var scans = { radio1: {}, radio2: {} }, logSource = 'system';
         var setupData = { mode: data.mode || 'router', wan_port: 'wan', wan_preference: 'wifi', primary_bssid: '', primary_security: 'auto', primary_password: '', backup_bssid: '', backup_security: 'auto', backup_password: '', client_ssid: '', client_password: '', ap_ssid: 'LS-MX4200v2', ap_security: 'none', ap_password: '', management_password: '' };
 		var content = E('div'), nav = E('nav'), result = E('div', { 'class': 'mx-result', 'hidden': true });
@@ -844,10 +928,54 @@ return view.extend({
 		function refresh() {
 			refreshButton.disabled = true;
 			return Promise.all([ overview(), profiles() ]).then(function(values) {
-				data = values[0] || {}; saved = values[1] || {}; draw();
+                var previous = data;
+                data = values[0] || {};saved = values[1] || {};
+                [ 'model', 'release', 'kernel', 'radios' ].forEach(function(key) { if (!data[key]) data[key] = previous[key]; });
+                updateInterfaceData(interfaceDump);setupData.mode = data.mode || setupData.mode;draw();
 			}).catch(function(error) { notice(_('Could not refresh status: ') + String(error), false); }).finally(function() { refreshButton.disabled = false; });
 		}
-        function navItem(key) { return E('button', { 'class': 'mx-nav' + (key === selected ? ' active' : ''), 'type': 'button', 'click': function() { selected = key; draw(); if (key === 'wireless' || key === 'setup') { loadScan('radio2'); loadScan('radio1'); } } }, [ E('span', { 'class': 'mx-nav-icon', 'aria-hidden': 'true' }, navIcons[key] || '•'), E('span', { 'class': 'mx-nav-label' }, names[key]) ]); }
+        function setLive(key, liveValue) {
+            var node = page.querySelector('[data-live="' + key + '"]'), text = value(liveValue);
+            if (node && node.textContent !== text) node.textContent = text;
+        }
+        function updateRuntime() {
+            return Promise.all([ callSystemInfo().catch(function() { return {}; }), callNetworkInterfaceDump().catch(function() { return { interface: [] }; }), callWirelessStatus().catch(function() { return {}; }) ]).then(function(values) {
+                if (!page.isConnected) return;
+                systemInfo = values[0] || {};
+                data.uptime = systemInfo.uptime || data.uptime;
+                data.load = Array.isArray(systemInfo.load) ? systemInfo.load.join(' ') : data.load;
+                data.memory_total = systemInfo.memory && systemInfo.memory.total || data.memory_total;
+                data.memory_available = systemInfo.memory && (systemInfo.memory.available || systemInfo.memory.free) || data.memory_available;
+                updateInterfaceData(values[1]);updateRadioData(values[2] || {});
+                setLive('system-uptime', formatUptime(data.uptime));setLive('system-load', data.load);setLive('system-kernel', data.kernel);
+                setLive('system-release', data.release);
+                var memoryTotal = Number(data.memory_total) || 0, memoryAvailable = Number(data.memory_available) || 0;
+                var memoryPercent = memoryTotal ? percent(Math.round(100 * (memoryTotal - memoryAvailable) / memoryTotal)) : 0;
+                setLive('memory-percent', memoryPercent + '%');
+                var memoryFill = page.querySelector('[data-live-width="memory-percent"]');
+                if (memoryFill) memoryFill.style.width = memoryPercent + '%';
+                setLive('lan-address', data.lan_address);
+                (data.uplinks || []).forEach(function(uplink) {
+                    var prefix = 'uplink-' + uplink.id;
+                    setLive(prefix + '-status', uplink.up ? _('Connected') : _('Unavailable'));
+                    setLive(prefix + '-protocol', uplink.protocol);setLive(prefix + '-address', uplink.address);
+                    setLive(prefix + '-dns', uplink.dns);setLive(prefix + '-uptime', uplink.uptime ? formatUptime(uplink.uptime) : '—');
+                });
+                setLive('gateway', data.gateway);
+                (data.radios || []).forEach(function(radio) {
+                    var prefix = 'radio-' + radio.name;
+                    setLive(prefix + '-state', radio.enabled ? _('Enabled') : _('Disabled'));setLive(prefix + '-channel', radio.channel);
+                    setLive(prefix + '-frequency', radio.frequency ? radio.frequency + ' MHz' : '—');setLive(prefix + '-power', radio.txpower ? radio.txpower + ' dBm' : '—');
+                });
+            });
+        }
+        function scheduleRuntimeRefresh() {
+            window.setTimeout(function() {
+                if (!page.isConnected) return;
+                updateRuntime().catch(function() {}).finally(scheduleRuntimeRefresh);
+            }, 8000);
+        }
+        function navItem(key) { return E('button', { 'class': 'mx-nav' + (key === selected ? ' active' : ''), 'type': 'button', 'click': function() { selected = key; draw(); if (key === 'wireless' || key === 'setup') { loadScan('radio2'); loadScan('radio1'); } } }, [ navIcon(key), E('span', { 'class': 'mx-nav-label' }, names[key]) ]); }
 		function loadScan(band) { return scanStatus(band).then(function(response) { scans[band] = response || {}; if (selected === 'wireless' || selected === 'setup') draw(); if ((selected === 'wireless' || selected === 'setup') && response && response.state === 'running') window.setTimeout(function() { if (selected === 'wireless' || selected === 'setup') loadScan(band); }, 5000); }).catch(function(error) { notice(_('Scan status unavailable: ') + String(error), false); }); }
 		function startScan(band) { if (!window.confirm(_('Scanning can briefly interrupt an active Wi-Fi backhaul. Continue?'))) return; var task = run(band === 'radio2' ? 'scan_5g' : 'scan_2g'); if (task) return task.then(function() { loadScan(band); }); }
 		function uplinkRows() { return (data.uplinks || []).map(function(u) {
@@ -855,23 +983,67 @@ return view.extend({
 			return [ E('span', {}, [ E('span', { 'class': 'mx-dot ' + (u.selected ? 'active' : u.up ? 'up' : 'down') }), u.label ]), status, value(u.address), value(u.protocol), value(u.signal), u.metric ? String(u.metric) : '—', u.selected ? chip(_('Active route'), 'info') : '—' ];
 		}); }
 		function uplinkTable() { return table([ _('Uplink'), _('Link'), _('IPv4'), _('Protocol'), _('Signal'), _('Metric'), _('Route') ], uplinkRows()); }
-		function uplinkDetails() { return E('div', { 'class': 'mx-grid' }, (data.uplinks || []).map(function(u) { return card(u.label, [ pair(_('Link'), u.up ? _('Connected') : _('Unavailable')), pair(_('IPv4'), u.address), pair(_('Device'), u.device), pair(_('DNS'), u.dns), pair(_('BSSID'), u.bssid), pair(_('Signal'), u.signal), pair(_('Received'), formatBytes(u.rx_bytes)), pair(_('Sent'), formatBytes(u.tx_bytes)) ]); })); }
+        function uplinkDetails() { return E('div', { 'class': 'mx-grid' }, (data.uplinks || []).map(function(u) { var prefix = 'uplink-' + u.id; return card(u.label, [ livePair(_('Link'), u.up ? _('Connected') : _('Unavailable'), prefix + '-status'), livePair(_('IPv4'), u.address, prefix + '-address'), livePair(_('Protocol'), u.protocol, prefix + '-protocol'), livePair(_('Uptime'), u.uptime ? formatUptime(u.uptime) : '—', prefix + '-uptime'), pair(_('Device'), u.device), livePair(_('DNS'), u.dns, prefix + '-dns'), pair(_('BSSID'), u.bssid), pair(_('Signal'), u.signal), pair(_('Received'), formatBytes(u.rx_bytes)), pair(_('Sent'), formatBytes(u.tx_bytes)) ]); })); }
 		function findUplink(id) { return (data.uplinks || []).filter(function(u) { return u.id === id; })[0] || null; }
 		function openSetup() { selected = 'setup'; draw(); loadScan('radio2'); loadScan('radio1'); }
 		function overviewHero() {
-			var sources = [ [ 'ethernet', _('Ethernet WAN') ], [ 'wifi5', _('5 GHz repeater') ], [ 'wifi2', _('2.4 GHz backup') ], [ 'usb', _('USB tethering') ] ];
-			return E('section', { 'class': 'mx-hero' }, [
-				E('div', { 'class': 'mx-hero-sources' }, sources.map(function(item) { var u = findUplink(item[0]); return E('div', { 'class': 'mx-hero-source' + (u && u.up ? ' online' : '') + (u && u.selected ? ' chosen' : '') }, [ E('span', { 'class': 'mx-hero-light' }), E('span', {}, item[1]), E('span', { 'class': 'mx-hero-rule' }) ]); })),
-				E('div', { 'class': 'mx-hero-center' }, [ E('div', { 'class': 'mx-router-art' }, [ E('div', { 'class': 'mx-router-top' }), E('div', { 'class': 'mx-router-face' }, [ E('span', {}, 'MX'), E('i') ]) ]), E('strong', {}, value(data.hostname, 'MX4200')), E('small', {}, _('Linksys MX4200 V2/P2') + ' · ' + value(data.mode)), E('div', { 'class': 'mx-hero-badges' }, [ E('span', {}, data.internet_probe ? _('● Internet online') : _('● Internet check failed')), E('span', {}, _('↔ ') + value(data.backhaul, _('Automatic backhaul'))) ]) ]),
-				E('div', { 'class': 'mx-hero-clients' }, [ E('div', { 'class': 'mx-hero-client' }, [ E('strong', {}, String(data.client_count || 0)), E('span', {}, _('Local DHCP clients')) ]), E('div', { 'class': 'mx-hero-client' }, [ E('strong', {}, value(data.lan_address, '—')), E('span', {}, _('LAN address')) ]), E('small', {}, _('AP/WDS clients using upstream DHCP may not appear here.')) ])
-			]);
+            var svgText = function(x, y, text, cls, anchor) { return E('text', { 'x': String(x), 'y': String(y), 'class': cls || '', 'text-anchor': anchor || 'start' }, text); };
+            var svgLine = function(x1, y1, x2, y2, active) { return E('line', { 'x1': String(x1), 'y1': String(y1), 'x2': String(x2), 'y2': String(y2), 'class': 'mx-topology-link' + (active ? ' active' : '') }); };
+            var wan = findUplink('ethernet') || {}, repeater5 = findUplink('wifi5') || {}, repeater2 = findUplink('wifi2') || {}, tether = findUplink('usb') || {};
+            var sources = [
+				{ label: _('Ethernet 1'), detail: _('WAN'), icon: 'ethernet', active: !!(wan.up && wan.selected) },
+				{ label: _('Ethernet 2'), detail: _('LAN'), icon: 'ethernet', active: Number(data.client_count) > 0 },
+				{ label: _('Repeater'), detail: value(data.backhaul), icon: 'wifi', active: !!(repeater5.up || repeater2.up) },
+				{ label: _('Tethering'), detail: _('USB'), icon: 'phone', active: !!tether.up }
+            ];
+        var cellular = interfaceDump.filter(function(item) { return /qmi|mbim|ncm|cellular/i.test(String(item.proto || '') + ' ' + String(item.device || '')); })[0];
+        if (cellular) sources.push({ label: _('Cellular'), detail: cellular.proto, icon: 'cellular', active: !!cellular.up });
+        var svgChildren = [], sourceY = sources.length === 5 ? [ 58, 108, 158, 208, 258 ] : [ 76, 132, 188, 244 ];
+        sources.forEach(function(source, index) {
+            var y = sourceY[index], cls = source.active ? ' active' : '';
+            var iconPath = source.icon === 'wifi' ? 'M192 ' + (y - 4) + 'q9-9 18 0 M196 ' + y + 'q5-5 10 0 M200 ' + (y + 4) + 'h.01' : source.icon === 'phone' ? 'M197 ' + (y - 9) + 'h10v18h-10z M200 ' + (y + 5) + 'h4' : source.icon === 'cellular' ? 'M202 ' + (y - 8) + 'v16 M197 ' + (y + 8) + 'l5-16 5 16 M194 ' + (y + 8) + 'h16 M199 ' + (y - 3) + 'a3 3 0 1 0 6 0 3 3 0 0 0-6 0' : 'M194 ' + (y - 7) + 'h16v14h-16z M198 ' + (y - 3) + 'v4 M202 ' + (y - 3) + 'v4 M206 ' + (y - 3) + 'v4 M199 ' + (y + 7) + 'v4 M205 ' + (y + 7) + 'v4';
+			svgChildren.push(E('path', { 'd': iconPath, 'class': 'mx-source-icon' + cls }), svgLine(235, y, 390, y, source.active), E('circle', { 'cx': '232', 'cy': String(y), 'r': '5', 'class': 'mx-topology-dot' + cls }), svgText(20, y + 5, source.label, 'mx-topology-label' + cls), svgText(165, y + 5, source.detail || '', 'mx-topology-detail', 'end'));
+        });
+        svgChildren.push(
+            E('path', { 'd': 'M390 58 V258 M390 158 H500', 'class': 'mx-topology-link-bus' }),
+            svgLine(390, 158, 500, 158, sources.some(function(source) { return source.active; })),
+            E('path', { 'd': 'M500 137 L590 96 L680 137 L590 178 Z M500 137 V174 L590 218 L680 174 V137 M590 178 V218', 'class': 'mx-router-outline' }),
+            E('path', { 'd': 'M535 123 V61 M565 110 V52 M615 110 V52 M645 123 V61 M535 61 L529 45 M565 52 L560 34 M615 52 L620 34 M645 61 L651 45', 'class': 'mx-router-outline' }),
+            E('circle', { 'cx': '579', 'cy': '183', 'r': '2', 'class': 'mx-router-light' }),
+            E('circle', { 'cx': '590', 'cy': '188', 'r': '2', 'class': 'mx-router-light' }),
+            E('circle', { 'cx': '601', 'cy': '193', 'r': '2', 'class': 'mx-router-light' }),
+            svgText(590, 239, value(data.model, 'Linksys MX4200 V2/P2'), 'mx-router-name', 'middle'),
+            svgText(590, 260, value(data.hostname, 'MX4200') + ' · ' + value(data.mode), 'mx-router-detail', 'middle'),
+            E('path', { 'd': 'M680 158 H790 V105 H840 M790 158 V220 H840', 'class': 'mx-topology-link-bus' }),
+            svgLine(680, 158, 790, 158, !!(data.wireless_client_count || data.client_count)),
+            svgLine(790, 105, 840, 105, Number(data.wireless_client_count) > 0),
+            svgLine(790, 220, 840, 220, Number(data.client_count) > 0),
+            E('path', { 'd': 'M854 96 Q866 82 878 96 M859 102 Q866 94 873 102 M864 108 Q866 106 868 108 M856 211 H875 V230 H856 Z M860 205 V211 M871 205 V211', 'class': 'mx-router-outline' }),
+            svgText(892, 101, _('WLAN clients') + ' · ' + String(data.wireless_client_count || 0), 'mx-topology-label'),
+            svgText(892, 222, _('LAN clients') + ' · ' + String(data.client_count || 0), 'mx-topology-label')
+        );
+        var features = [
+            { name: 'AdGuard', visible: services.adguard, active: !!data.adguard_home_running },
+            { name: 'IPv6', visible: interfaceDump.some(function(item) { return (item['ipv6-address'] || []).length > 0; }), active: interfaceDump.some(function(item) { return (item['ipv6-address'] || []).length > 0; }) },
+            { name: 'VPN', visible: services.wireguard || services.openvpn || services.tailscale, active: !!(data.wireguard || data.openvpn || /running/i.test(data.tailscale_state || '')) },
+            { name: 'Tor', visible: services.tor, active: false },
+            { name: '5 GHz', visible: true, active: (data.radios || []).some(function(radio) { return /5g|11a/i.test(String(radio.band)) && radio.enabled; }) },
+            { name: '2.4 GHz', visible: true, active: (data.radios || []).some(function(radio) { return /2g|11g|11b/i.test(String(radio.band)) && radio.enabled; }) }
+        ].filter(function(feature) { return feature.visible; });
+        var featureStart = 430, featureGap = 72;
+        features.forEach(function(feature, index) {
+            var x = featureStart + index * featureGap, cls = feature.active ? ' active' : '';
+            svgChildren.push(E('circle', { 'cx': String(x), 'cy': '303', 'r': '12', 'class': 'mx-feature-icon' + cls }), E('circle', { 'cx': String(x), 'cy': '303', 'r': '3', 'class': 'mx-feature-core' + cls }), svgText(x, 329, feature.name, 'mx-feature-label' + cls, 'middle'));
+        });
+        return E('section', { 'class': 'mx-hero mx-topology-panel' }, E('div', { 'class': 'mx-topology-scroll' }, E('svg', { 'class': 'mx-topology-svg', 'viewBox': '0 0 1080 350', 'role': 'img', 'aria-label': _('Live network topology') }, svgChildren)));
 		}
 		function overviewLinkCard(title, u, kind, actionLabel, actionFn) {
-			var online = !!(u && u.up), details = [ pair(_('Status'), online ? _('Connected') : _('Unavailable')), pair(_('Protocol'), u && u.protocol), pair(_('IP address'), u && u.address) ];
+            var online = !!(u && u.up), prefix = 'uplink-' + (u && u.id || 'unknown'), details = [ livePair(_('Status'), online ? _('Connected') : _('Unavailable'), prefix + '-status'), livePair(_('Protocol'), u && u.protocol, prefix + '-protocol'), livePair(_('IP address'), u && u.address, prefix + '-address') ];
 			if (kind === 'wifi') details.push(pair(_('BSSID'), u && u.bssid), pair(_('Signal'), u && u.signal));
-			else details.push(pair(_('Gateway'), data.gateway));
+            else details.push(livePair(_('Gateway'), data.gateway, 'gateway'));
             if (kind === 'ethernet') details.push(pair(_('WAN socket role'), data.wan_port_role === 'lan' ? _('LAN bridge') : _('WAN uplink')));
-			if (u && u.dns) details.push(pair(_('DNS server'), u.dns));
+            if (u && u.dns) details.push(livePair(_('DNS server'), u.dns, prefix + '-dns'));
+            if (kind === 'ethernet') details.push(livePair(_('Uptime'), u && u.uptime ? formatUptime(u.uptime) : '—', prefix + '-uptime'));
 			return E('section', { 'class': 'mx-card mx-link-card' }, [ E('div', { 'class': 'mx-card-head' }, [ E('h3', {}, [ E('span', { 'class': 'mx-dot ' + (online ? 'active' : 'down') }), title ]), chip(u && u.selected ? _('Active route') : online ? _('Connected') : _('Unavailable'), online ? 'ok' : 'bad') ]), E('div', { 'class': 'mx-link-body' }, [ E('div', { 'class': 'mx-link-details' }, [ E('div', { 'class': 'mx-link-pairs' }, details), E('div', { 'class': 'mx-link-actions' }, button(actionLabel, actionFn)) ]), E('div', { 'class': 'mx-link-symbol ' + kind }, kind === 'wifi' ? 'Wi-Fi' : kind === 'usb' ? 'USB' : '↔') ]) ]);
 		}
 		function overviewPage() {
@@ -885,7 +1057,7 @@ return view.extend({
                     overviewLinkCard(_('2.4 GHz backup · radio1'), backup, 'wifi', _('Backhaul settings'), function() { selected = 'wireless'; draw(); }),
                     overviewLinkCard(_('USB tethering'), usb, 'usb', _('USB controls'), function() { selected = 'controls'; draw(); })
                 ]),
-                E('div', { 'class': 'mx-grid mx-overview-health' }, [ card(_('Router health'), [ pair(_('Uptime'), formatUptime(data.uptime)), pair(_('CPU load · 1 / 5 / 15 min'), data.load), pair(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—'), pair(_('LED'), data.led_state) ]), card(_('Memory and access'), [ usage(_('Memory used'), mtotal - mavail, mtotal), pair(_('Mode'), data.mode), pair(_('OpenWrt'), data.release), regularLuciLink() ]) ])
+                E('div', { 'class': 'mx-grid mx-overview-health' }, [ card(_('Router health'), [ livePair(_('Uptime'), formatUptime(data.uptime), 'system-uptime'), livePair(_('CPU load · 1 / 5 / 15 min'), data.load, 'system-load'), pair(_('Temperature'), temp ? (temp / 1000).toFixed(1) + ' °C' : '—'), pair(_('LED'), data.led_state) ]), card(_('Memory and access'), [ usage(_('Memory used'), mtotal - mavail, mtotal), pair(_('Mode'), data.mode), livePair(_('OpenWrt'), data.release, 'system-release'), regularLuciLink() ]) ])
 			]) ];
 		}
 		function setupRow(label, control, hint) { return E('div', { 'class': 'mx-form-row' }, [ E('label', {}, label), E('div', {}, [ control, hint ? E('small', { 'class': 'mx-muted' }, hint) : '' ]) ]); }
@@ -963,7 +1135,7 @@ return view.extend({
         function dnsPage() {
             var resolvers = (data.uplinks || []).filter(function(u) { return !!u.dns; }).map(function(u) { return [ u.label, u.dns ]; });
             var adblockEnabled = data.adblock_fast_enabled === 1, adblockActive = data.adblock_fast_running === 1;
-            var adblockStatus = !adblockEnabled ? _('Disabled / not installed') : adblockActive ? _('Active') : _('Enabled, not running');
+            var adblockStatus = !services.adblock ? _('Not installed') : !adblockEnabled ? _('Disabled') : adblockActive ? _('Active') : _('Enabled, not running');
             var proxyConfigured = Number(data.encrypted_dns_count) > 0;
             var dnsmasqUpdate = data.encrypted_dns_dnsmasq_update || _('Not configured');
             var adblockUsesDnsmasq = (data.adblock_dns_mode || '').indexOf('dnsmasq.') === 0;
@@ -973,6 +1145,7 @@ return view.extend({
             providerSelect.value = [ 'cloudflare', 'google', 'quad9' ].indexOf(currentProvider) >= 0 ? currentProvider : '';
             var applyResult = E('pre', { 'class': 'mx-result', 'hidden': true });
             function updateDns(actionName) {
+                if (!services.doh) { applyResult.hidden = false;applyResult.textContent = _('HTTPS DNS Proxy is not installed.');return; }
                 if (actionName === 'provider' && !providerSelect.value) { applyResult.hidden = false;applyResult.textContent = _('Choose a DNS provider first.');return; }
                 if (actionName === 'provider' && !window.confirm(_('This replaces the HTTPS DNS Proxy resolver list with the selected preset. Continue?'))) return;
                 if (actionName === 'enable' && !proxyConfigured) { applyResult.hidden = false;applyResult.textContent = _('Choose and apply a provider before enabling encrypted DNS.');return; }
@@ -982,22 +1155,47 @@ return view.extend({
                     if (response && response.ok) return refresh();
                 }).catch(function(error) { applyResult.textContent = String(error); });
             }
-            return [ card(_('DNS status and path'), [ table([ _('Uplink'), _('Learned DNS servers') ], resolvers), pair(_('AdBlock Fast'), adblockStatus), pair(_('AdBlock mode'), data.adblock_dns_mode || _('Not configured')), pair(_('Encrypted provider'), data.encrypted_dns_provider), pair(_('HTTPS DNS Proxy'), data.encrypted_dns_running === 1 ? _('Running') : proxyConfigured ? _('Configured, stopped') : _('Not configured')), pair(_('dnsmasq integration'), dnsmasqUpdate), pair(_('Resolved path'), chain), E('p', { 'class': 'mx-note' }, _('AdBlock Fast filters locally through dnsmasq; HTTPS DNS Proxy resolves the upstream queries. In dnsmasq.servers mode with proxy integration enabled, filtering remains in the path.')), E('div', { 'class': 'mx-controls' }, [ button(_('Refresh DNS status'), refresh) ]) ]), card(_('Encrypted DNS provider'), [ E('p', {}, _('Select a preset upstream. AdBlock Fast stays in dnsmasq and HTTPS DNS Proxy supplies encrypted upstream resolution. Custom endpoints remain available in the native LuCI page.')), setupRow(_('Provider'), providerSelect, _('Applying a preset replaces the current HTTPS DNS Proxy resolver instances.')), E('div', { 'class': 'mx-controls' }, [ button(_('Apply provider'), function() { updateDns('provider'); }, 'primary'), button(_('Enable encrypted DNS'), function() { updateDns('enable'); }), button(_('Disable encrypted DNS'), function() { updateDns('disable'); }), link(_('Advanced DoH settings'), 'admin/services/https-dns-proxy') ]), applyResult ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('WAN DNS servers'), _('Edit DNS servers assigned to the WAN interface.'), 'admin/network/network'), nativeToolCard(_('Local DNS and DHCP'), _('Configure dnsmasq, DHCP reservations, and local host records.'), 'admin/network/dhcp'), nativeToolCard(_('AdBlock Fast'), _('Enable filtering and choose its dnsmasq integration mode.'), 'admin/services/adblock-fast') ]) ];
+            var proxyCard = services.doh ? card(_('Encrypted DNS provider'), [ E('p', {}, _('Select a preset upstream. AdBlock Fast stays in dnsmasq and HTTPS DNS Proxy supplies encrypted upstream resolution. Custom endpoints remain available in the native LuCI page.')), setupRow(_('Provider'), providerSelect, _('Applying a preset replaces the current HTTPS DNS Proxy resolver instances.')), E('div', { 'class': 'mx-controls' }, [ button(_('Apply provider'), function() { updateDns('provider'); }, 'primary'), button(_('Enable encrypted DNS'), function() { updateDns('enable'); }), button(_('Disable encrypted DNS'), function() { updateDns('disable'); }), link(_('Advanced DoH settings'), 'admin/services/https-dns-proxy') ]), applyResult ]) : card(_('Encrypted DNS provider'), _('HTTPS DNS Proxy is not installed.'));
+			var adblockCard = services.adblock ? nativeToolCard(_('AdBlock Fast'), _('Enable filtering and choose its dnsmasq integration mode.'), 'admin/services/adblock-fast') : card(_('AdBlock Fast'), _('This optional filtering service is not installed.'));
+			return [ card(_('DNS status and path'), [ table([ _('Uplink'), _('Learned DNS servers') ], resolvers), pair(_('AdBlock Fast'), adblockStatus), pair(_('AdBlock mode'), data.adblock_dns_mode || _('Not configured')), pair(_('Encrypted provider'), data.encrypted_dns_provider), pair(_('HTTPS DNS Proxy'), services.doh ? data.encrypted_dns_running === 1 ? _('Running') : proxyConfigured ? _('Configured, stopped') : _('Not configured') : _('Not installed')), pair(_('dnsmasq integration'), dnsmasqUpdate), pair(_('Resolved path'), chain), E('p', { 'class': 'mx-note' }, _('AdBlock Fast filters locally through dnsmasq; HTTPS DNS Proxy resolves the upstream queries. In dnsmasq.servers mode with proxy integration enabled, filtering remains in the path.')), E('div', { 'class': 'mx-controls' }, [ button(_('Refresh DNS status'), refresh) ]) ]), proxyCard, E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('WAN DNS servers'), _('Edit DNS servers assigned to the WAN interface.'), 'admin/network/network'), nativeToolCard(_('Local DNS and DHCP'), _('Configure dnsmasq, DHCP reservations, and local host records.'), 'admin/network/dhcp'), adblockCard ]) ];
         }
         function networkPage() {
-            return [ card(_('Network overview'), [ uplinkTable(), E('div', { 'class': 'mx-space' }), pair(_('LAN address'), data.lan_address), pair(_('Management address'), data.management_address), pair(_('Default route'), data.route_device), pair(_('Gateway'), data.gateway) ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('LAN and Ethernet'), _('Configure interfaces, bridges, physical ports, and IPv6.'), 'admin/network/network'), nativeToolCard(_('DHCP and DNS'), _('Manage DHCP reservations and local DNS.'), 'admin/network/dhcp'), nativeToolCard(_('Routes'), _('Inspect and configure static routes.'), 'admin/network/routes'), nativeToolCard(_('Firewall'), _('Configure zones, forwards, and port rules.'), 'admin/network/firewall'), nativeToolCard(_('Multi-WAN'), _('Manage the installed mwan3 policy service.'), 'admin/network/mwan3') ]) ];
+            var cards = [ nativeToolCard(_('LAN and Ethernet'), _('Configure interfaces, bridges, physical ports, and IPv6.'), 'admin/network/network'), nativeToolCard(_('DHCP and DNS'), _('Manage DHCP reservations and local DNS.'), 'admin/network/dhcp'), nativeToolCard(_('Routes'), _('Inspect and configure static routes.'), 'admin/network/routes'), nativeToolCard(_('Firewall'), _('Configure zones, forwards, and port rules.'), 'admin/network/firewall') ];
+            if (services.mwan3) cards.push(nativeToolCard(_('Multi-WAN'), _('Manage the installed mwan3 policy service.'), 'admin/network/mwan3'));
+            return [ card(_('Network overview'), [ uplinkTable(), E('div', { 'class': 'mx-space' }), livePair(_('LAN address'), data.lan_address, 'lan-address'), pair(_('Management address'), data.management_address), pair(_('Default route'), data.route_device), pair(_('Gateway'), data.gateway) ]), E('div', { 'class': 'mx-grid' }, cards) ];
         }
         function meshPage() {
             return wirelessPage().concat([ card(_('MX backhaul modes'), [ E('p', {}, _('MX4200 supports routed repeater and WDS bridging. These modes are not 802.11s mesh.')), E('div', { 'class': 'mx-controls' }, [ button(_('Configure backhaul'), openSetup, 'primary'), terminalLink() ]) ]) ]);
         }
         function securityPage() {
-            return [ E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Firewall and port forwarding'), _('Review firewall zones, forwards, and inbound rules.'), 'admin/network/firewall'), nativeToolCard(_('UPnP IGD'), _('Optional automatic port mapping. Review the security implications before enabling.'), 'admin/services/upnp'), nativeToolCard(_('Wireless access rules'), _('Configure MAC filtering for supported wireless networks.'), 'admin/network/wireless'), nativeToolCard(_('Administrator access'), _('Manage the local password and access settings.'), 'admin/system/admin') ]) ];
+            var cards = [ nativeToolCard(_('Firewall and port forwarding'), _('Review firewall zones, forwards, and inbound rules.'), 'admin/network/firewall'), nativeToolCard(_('Wireless access rules'), _('Configure MAC filtering for supported wireless networks.'), 'admin/network/wireless'), nativeToolCard(_('Administrator access'), _('Manage the local password and access settings.'), 'admin/system/admin') ];
+            if (services.upnp) cards.push(nativeToolCard(_('UPnP IGD'), _('Optional automatic port mapping. Review the security implications before enabling.'), 'admin/services/upnp'));
+            if (services.adblock) cards.push(nativeToolCard(_('AdBlock Fast'), _('Review local DNS filtering and its dnsmasq integration.'), 'admin/services/adblock-fast'));
+            return [ E('div', { 'class': 'mx-grid' }, cards) ];
         }
         function trafficPage() {
-            return [ card(_('Current uplink traffic'), uplinkDetails()), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Network quality / SQM'), _('Manage latency and queue shaping.'), 'admin/network/sqm'), nativeToolCard(_('Bandwidth monitor'), _('Inspect per-client bandwidth accounting.'), 'admin/services/nlbw'), nativeToolCard(_('Traffic graphs'), _('View vnStat and system statistics.'), 'admin/status/vnstat2'), nativeToolCard(_('Multi-WAN'), _('Configure route policy and failover.'), 'admin/network/mwan3') ]) ];
+            var cards = [];
+            if (services.sqm) cards.push(nativeToolCard(_('Network quality / SQM'), _('Manage latency and queue shaping.'), 'admin/network/sqm'));
+            if (services.nlbwmon) cards.push(nativeToolCard(_('Bandwidth monitor'), _('Inspect per-client bandwidth accounting.'), 'admin/services/nlbw'));
+            if (services.vnstat) cards.push(nativeToolCard(_('Traffic graphs'), _('View vnStat and system statistics.'), 'admin/status/vnstat2'));
+            if (services.mwan3) cards.push(nativeToolCard(_('Multi-WAN'), _('Configure route policy and failover.'), 'admin/network/mwan3'));
+            if (!cards.length) cards.push(card(_('Optional traffic tools'), _('No SQM, bandwidth monitor, graphing, or multi-WAN service was detected.')));
+            return [ card(_('Current uplink traffic'), uplinkDetails()), E('div', { 'class': 'mx-grid' }, cards) ];
         }
         function applicationsPage() {
-            return [ E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Package manager'), _('Inspect installed packages and available firmware packages.'), 'admin/system/package-manager'), nativeToolCard(_('Dynamic DNS'), _('Configure DDNS providers and updates.'), 'admin/services/ddns'), nativeToolCard(_('Network storage'), _('Configure Samba shares.'), 'admin/services/samba4'), nativeToolCard(_('Samba accounts'), _('Manage MX Samba-only users.'), 'admin/services/samba-users'), nativeToolCard(_('File manager'), _('Browse attached and router storage.'), 'admin/system/filemanager'), nativeToolCard(_('Tailscale'), _('Open Tailscale configuration.'), 'admin/vpn/tailscale'), card(_('ZeroTier'), [ E('p', {}, _('Configure a private overlay VPN without a GL.iNet account.')), button(_('Open ZeroTier controls'), function() { selected = 'zerotier'; draw(); }) ]), nativeToolCard(_('Tor'), _('Configure Tor and onion services.'), 'admin/services/tor'), nativeToolCard(_('UPnP IGD'), _('Manage optional automatic port mapping.'), 'admin/services/upnp'), nativeToolCard(_('Encrypted DNS'), _('Configure DNS-over-HTTPS upstreams.'), 'admin/services/https-dns-proxy'), nativeToolCard(_('Ad blocking'), _('Manage AdBlock Fast.'), 'admin/services/adblock-fast'), nativeToolCard(_('Browser terminal'), _('Open the local OpenWrt terminal.'), 'admin/services/ttyd/ttyd') ]) ];
+            var cards = [];
+            if (services.packageManager) cards.push(nativeToolCard(_('Package manager'), _('Inspect installed packages and firmware packages.'), 'admin/system/package-manager'));
+            if (services.ddns) cards.push(nativeToolCard(_('Dynamic DNS'), _('Configure DDNS providers and updates.'), 'admin/services/ddns'));
+            if (services.samba) cards.push(nativeToolCard(_('Network storage'), _('Configure Samba shares and users.'), 'admin/services/samba4'));
+            if (services.tailscale) cards.push(nativeToolCard(_('Tailscale'), _('Open Tailscale configuration.'), 'admin/vpn/tailscale'));
+            if (services.zerotier) cards.push(card(_('ZeroTier'), [ E('p', {}, _('Configure a private overlay VPN without a GL.iNet account.')), button(_('Open ZeroTier controls'), function() { selected = 'zerotier'; draw(); }) ]));
+            if (services.tor) cards.push(nativeToolCard(_('Tor'), _('Configure Tor and onion services.'), 'admin/services/tor'));
+            if (services.upnp) cards.push(nativeToolCard(_('UPnP IGD'), _('Manage optional automatic port mapping.'), 'admin/services/upnp'));
+            if (services.doh) cards.push(nativeToolCard(_('Encrypted DNS'), _('Configure DNS-over-HTTPS upstreams.'), 'admin/services/https-dns-proxy'));
+            if (services.adblock) cards.push(nativeToolCard(_('Ad blocking'), _('Manage AdBlock Fast.'), 'admin/services/adblock-fast'));
+            if (services.ttyd) cards.push(nativeToolCard(_('Browser terminal'), _('Open the local OpenWrt terminal.'), 'admin/services/ttyd/ttyd'));
+            if (!cards.length) cards.push(card(_('Optional applications'), _('No optional application services were detected.')));
+            return [ E('div', { 'class': 'mx-grid' }, cards) ];
         }
 		function profileTable() {
 			var p = saved.profiles || {};
@@ -1021,10 +1219,25 @@ return view.extend({
 		}
 		function wirelessPage() {
 			var w = data.wifi || {};
-			return [ card(_('Backhaul'), [ pair(_('5 GHz · radio2 · 4×4'), value(w.mx_primary, _('Not configured'))), pair(_('2.4 GHz · radio1 · backup'), value(w.mx_backup, _('Not configured'))), pair(_('Current backhaul'), data.backhaul), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Automatic'), function() { run('backhaul_auto', true); }), button(_('5 GHz only'), function() { run('backhaul_primary', true); }), button(_('2.4 GHz only'), function() { run('backhaul_backup', true); }) ]) ]), sectionTitle(_('Broadcast networks')), E('div', { 'class': 'mx-grid' }, [ card(_('2.4 GHz'), [ pair(_('SSID'), w.mx_ap2), pair(_('Management SSID'), w.mx_mgmt) ]), card(_('5 GHz'), [ pair(_('5 GHz 2×2'), w.mx_ap5), pair(_('5 GHz 4×4'), w.mx_ap_high) ]) ]), sectionTitle(_('Nearby networks')), E('p', { 'class': 'mx-sub' }, _('Scans reuse the offline MX scanner and exclude this router’s own BSSIDs. Scanning may briefly affect an active Wi-Fi backhaul.')), E('div', { 'class': 'mx-grid' }, [ scanCard('radio2', _('5 GHz · radio2')), scanCard('radio1', _('2.4 GHz · radio1')) ]), sectionTitle(_('Join Wi-Fi')), card(_('Native repeater setup'), [ E('p', {}, _('Use Set up Internet to choose an upstream network and configure WDS or routed repeater.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), terminalLink() ]) ]) ];
+            var radios = (data.radios || []).map(function(radio) {
+                var clients = (data.wireless_clients || []).filter(function(client) { return client.radio === radio.name; }).length;
+                var band = radio.band || radio.name;
+                var ssidList = radio.ssids && radio.ssids.length ? radio.ssids.join(', ') : _('No AP SSID configured');
+                var prefix = 'radio-' + radio.name;
+                return card(band + ' · ' + radio.name, [ livePair(_('State'), radio.enabled ? _('Enabled') : _('Disabled'), prefix + '-state'), pair(_('SSID'), ssidList), livePair(_('Channel'), radio.channel, prefix + '-channel'), livePair(_('Frequency'), radio.frequency ? radio.frequency + ' MHz' : '—', prefix + '-frequency'), pair(_('Channel width'), radio.width), livePair(_('TX power'), radio.txpower ? radio.txpower + ' dBm' : '—', prefix + '-power'), pair(_('Associated clients'), clients) ]);
+            });
+            return [ card(_('Backhaul'), [ pair(_('5 GHz · radio2 · 4×4'), value(w.mx_primary, _('Not configured'))), pair(_('2.4 GHz · radio1 · backup'), value(w.mx_backup, _('Not configured'))), pair(_('Current backhaul'), data.backhaul), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Automatic'), function() { run('backhaul_auto', true); }), button(_('5 GHz only'), function() { run('backhaul_primary', true); }), button(_('2.4 GHz only'), function() { run('backhaul_backup', true); }) ]) ]), sectionTitle(_('Radio status')), E('div', { 'class': 'mx-grid' }, radios.length ? radios : [ card(_('Wireless'), _('No configured radios were returned by UCI.')) ]), sectionTitle(_('Broadcast networks')), E('div', { 'class': 'mx-grid' }, [ card(_('2.4 GHz'), [ pair(_('SSID'), w.mx_ap2), pair(_('Management SSID'), w.mx_mgmt) ]), card(_('5 GHz'), [ pair(_('5 GHz 2×2'), w.mx_ap5), pair(_('5 GHz 4×4'), w.mx_ap_high) ]) ]), sectionTitle(_('Nearby networks')), E('p', { 'class': 'mx-sub' }, _('Scans reuse the offline MX scanner and exclude this router’s own BSSIDs. Scanning may briefly affect an active Wi-Fi backhaul.')), E('div', { 'class': 'mx-grid' }, [ scanCard('radio2', _('5 GHz · radio2')), scanCard('radio1', _('2.4 GHz · radio1')) ]), sectionTitle(_('Join Wi-Fi')), card(_('Native repeater setup'), [ E('p', {}, _('Use Set up Internet to choose an upstream network and configure WDS or routed repeater.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), terminalLink() ]) ]) ];
 		}
         function clientsPage() { return [ card(_('Connected Wi-Fi devices'), [ pair(_('Associated devices'), data.wireless_client_count), E('div', { 'class': 'mx-space' }), table([ _('Name'), _('Radio'), _('IPv4 lease'), _('MAC'), _('Signal'), _('Received'), _('Sent') ], (data.wireless_clients || []).map(function(c) { return [ value(c.name, _('Unknown')), c.radio, value(c.address), c.mac, value(c.signal, '—') + ' dBm', formatBytes(c.rx_bytes), formatBytes(c.tx_bytes) ]; })) ]), card(_('Local DHCP leases'), [ E('p', { 'class': 'mx-note' }, _('Clients using upstream DHCP in wired AP or WDS mode may not appear in this lease list.')), E('div', { 'class': 'mx-space' }), table([ _('Name'), _('IPv4'), _('MAC') ], (data.clients || []).map(function(c) { return [ value(c.name, _('Unknown')), c.address, c.mac ]; })) ]), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('DHCP reservations'), _('Assign fixed local addresses to known clients.'), 'admin/network/dhcp'), nativeToolCard(_('Access control'), _('Configure per-network wireless MAC filtering.'), 'admin/network/wireless') ]) ]; }
-        function vpnPage() { return [ E('div', { 'class': 'mx-grid' }, [ card(_('Tailscale'), [ pair(_('State'), data.tailscale_state), pair(_('Router IP'), data.tailscale_ip), E('div', { 'class': 'mx-space' }), link(_('Open Tailscale settings'), 'admin/vpn/tailscale') ]), card(_('WireGuard and OpenVPN'), [ pair(_('WireGuard interfaces'), data.wireguard), pair(_('OpenVPN process'), data.openvpn ? _('Running') : _('Not running')), E('div', { 'class': 'mx-space' }), link(_('Open VPN settings'), 'admin/vpn') ]), nativeToolCard(_('WireGuard status'), _('Inspect active WireGuard interfaces and peers.'), 'admin/status/wireguard'), nativeToolCard(_('Policy routing'), _('Configure the installed PBR service.'), 'admin/services/pbr') ]) ]; }
+        function vpnPage() {
+            var cards = [];
+            if (services.tailscale) cards.push(card(_('Tailscale'), [ pair(_('State'), data.tailscale_state), pair(_('Router IP'), data.tailscale_ip), E('div', { 'class': 'mx-space' }), link(_('Open Tailscale settings'), 'admin/vpn/tailscale') ]));
+            if (services.wireguard) cards.push(card(_('WireGuard'), [ pair(_('Interfaces'), data.wireguard), link(_('Open network settings'), 'admin/network/network') ]));
+            if (services.openvpn) cards.push(card(_('OpenVPN'), [ pair(_('Process'), data.openvpn ? _('Running') : _('Not running')), link(_('Open VPN settings'), 'admin/vpn') ]));
+            if (services.pbr) cards.push(nativeToolCard(_('Policy routing'), _('Configure the installed PBR service.'), 'admin/services/pbr'));
+            if (!cards.length) cards.push(card(_('VPN services'), _('No WireGuard, OpenVPN, Tailscale, or policy-routing service was detected.')));
+            return [ E('div', { 'class': 'mx-grid' }, cards) ];
+        }
         function zerotierPage() {
             var network = E('input', { 'class': 'mx-search', 'type': 'text', 'maxlength': '16', 'autocomplete': 'off', 'placeholder': _('16-character network ID') });
             var output = E('pre', { 'class': 'mx-result' }, _('Check the service status before joining a network.'));
@@ -1048,16 +1261,17 @@ return view.extend({
 			reload();
 			return [ card(_('Recent logs · last 120 lines'), [ E('div', { 'class': 'mx-controls' }, [ button(_('System'), function() { logSource = 'system'; draw(); }, logSource === 'system' ? 'primary' : ''), button(_('Kernel'), function() { logSource = 'kernel'; draw(); }, logSource === 'kernel' ? 'primary' : ''), search, button(_('Refresh logs'), reload) ]), E('div', { 'class': 'mx-space' }), text ]) ];
 		}
-        function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), pair(_('OpenWrt'), data.release), pair(_('Kernel'), data.kernel), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), pair(_('Uptime'), formatUptime(data.uptime)) ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]), sectionTitle(_('System tools')), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Administrator password'), _('Change local web and SSH credentials.'), 'admin/system/admin'), nativeToolCard(_('Firmware update'), _('Review attended and manual firmware upgrade options.'), 'admin/system/attendedsysupgrade'), nativeToolCard(_('Scheduled tasks'), _('Manage configured cron jobs.'), 'admin/system/crontab'), nativeToolCard(_('Time and timezone'), _('Set local time and timezone.'), 'admin/system/system'), nativeToolCard(_('Backup / flash'), _('Back up configuration or install firmware.'), 'admin/system/flash') ]) ]; }
+        function systemPage() { return [ card(_('Regular OpenWrt settings'), [ E('p', {}, _('Open the standard LuCI interface in a new tab. Both views use the same router settings.')), E('div', { 'class': 'mx-space' }), regularLuciLink(), E('div', { 'class': 'mx-space' }), button(_('Update MX dashboard'), function() { run('ui_update'); }, 'primary'), E('p', { 'class': 'mx-muted' }, _('Checks the signed release. Reload this page after a successful update.')) ]), sectionTitle(_('Device and access')), E('div', { 'class': 'mx-grid' }, [ card(_('Device'), [ pair(_('Hostname'), data.hostname), pair(_('Model'), data.model), livePair(_('OpenWrt'), data.release, 'system-release'), livePair(_('Kernel'), data.kernel, 'system-kernel'), pair(_('CPU cores'), data.cpu_cores), pair(_('Mode'), data.mode), livePair(_('Uptime'), formatUptime(data.uptime), 'system-uptime') ]), card(_('Admin access'), [ pair(_('SSH port'), value(data.ssh_port, '22')), pair(_('HTTP listener'), data.http_listen), pair(_('HTTPS listener'), data.https_listen), E('p', { 'class': 'mx-muted' }, _('Firewall rules determine whether access is allowed from an uplink.')) ]) ]), sectionTitle(_('System tools')), E('div', { 'class': 'mx-grid' }, [ nativeToolCard(_('Administrator password'), _('Change local web and SSH credentials.'), 'admin/system/admin'), nativeToolCard(_('Firmware update'), _('Review attended and manual firmware upgrade options.'), 'admin/system/attendedsysupgrade'), nativeToolCard(_('Scheduled tasks'), _('Manage configured cron jobs.'), 'admin/system/crontab'), nativeToolCard(_('Time and timezone'), _('Set local time and timezone.'), 'admin/system/system'), nativeToolCard(_('Backup / flash'), _('Back up configuration or install firmware.'), 'admin/system/flash') ]) ]; }
 		function controlsPage() { return [ card(_('MX mode controls'), [ E('p', {}, _('Use Set up Internet for a new router, WDS, routed repeater, or wired AP configuration. The SSH mx menu remains available offline.')), E('div', { 'class': 'mx-space' }), E('div', { 'class': 'mx-controls' }, [ button(_('Open native setup'), function() { selected = 'setup';draw();loadScan('radio2');loadScan('radio1'); }, 'primary'), link(_('Open MX Manager'), 'admin/services/mx4200'), terminalLink() ]) ]), sectionTitle(_('USB tethering')), card(_('Connected phone'), E('div', { 'class': 'mx-controls' }, [ button(_('Detect USB'), function() { run('usb_detect'); }), button(_('Primary'), function() { run('usb_primary', true); }), button(_('Backup'), function() { run('usb_backup', true); }), button(_('Off'), function() { run('usb_off', true); }) ])), sectionTitle(_('Diagnostics')), card(_('Local checks'), E('div', { 'class': 'mx-controls' }, [ button(_('WDS/DNS test'), function() { run('wds_test'); }), button(_('Auto priorities'), function() { run('auto_status'); }), button(_('One mode decision'), function() { run('auto_once', true); }) ])) ]; }
 		function draw() {
 			page.className = 'mx-dashboard mx-page-' + selected;
-			nav.replaceChildren.apply(nav, Object.keys(names).map(navItem));
+            nav.replaceChildren.apply(nav, Object.keys(names).filter(function(key) { return key !== 'zerotier' || services.zerotier; }).map(navItem));
 			title.textContent = _(names[selected]);
             var views = { overview: overviewPage, setup: setupPage, priority: priorityPage, internet: internetPage, dns: dnsPage, wireless: wirelessPage, mesh: meshPage, clients: clientsPage, vpn: vpnPage, zerotier: zerotierPage, network: networkPage, security: securityPage, traffic: trafficPage, applications: applicationsPage, led: ledPage, logs: logsPage, system: systemPage, controls: controlsPage };
 			content.replaceChildren.apply(content, views[selected]());
 		}
 		draw();
+        scheduleRuntimeRefresh();
 		if (loadError) notice(_('MX status is temporarily unavailable. Check that rpcd is running, then refresh this page.'), false);
 		return page;
 	},
@@ -1117,13 +1331,39 @@ body:has(.mx-dashboard){padding:0!important;margin:0!important;background:#eef0f
 .mx-overview-health .mx-card-body{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
 @media(max-width:900px){.mx-overview-uplinks{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.mx-overview-uplinks,.mx-overview-health .mx-card-body{grid-template-columns:1fr}}
+.mx-topology-panel{display:block;min-height:0;padding:14px 18px;background:linear-gradient(105deg,#281a78 0%,#17134f 48%,#34258a 100%);color:#e4e7ff}
+.mx-topology-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-x:contain}
+.mx-topology-svg{display:block;width:100%;min-width:860px;height:340px;font:12px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.mx-topology-link,.mx-topology-link-bus{fill:none;stroke:#73799d;stroke-width:1.5;stroke-dasharray:4 5}
+.mx-topology-link.active{stroke:#27dce0;stroke-width:2;stroke-dasharray:none}
+.mx-topology-link-bus{stroke:#697092;stroke-dasharray:3 5}
+.mx-topology-dot{fill:#777d9e}.mx-topology-dot.active,.mx-feature-core.active{fill:#2de1df}.mx-source-icon{fill:none;stroke:#8589a9;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}.mx-source-icon.active{stroke:#27dce0}
+.mx-topology-label{fill:#d9dcf1;font-size:14px}.mx-topology-label.active{fill:#45e5e3}.mx-topology-detail{fill:#969abb;font-size:11px}
+.mx-router-outline{fill:rgba(31,31,109,.45);stroke:#36dce0;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.mx-router-light{fill:#48e1df}.mx-router-name{fill:#42e3e1;font-size:14px;font-weight:650}.mx-router-detail{fill:#b4b8e5;font-size:11px}
+.mx-feature-icon{fill:rgba(31,31,109,.75);stroke:#9397c0;stroke-width:1.5}.mx-feature-icon.active{stroke:#2ddde0}.mx-feature-core{fill:#979bbc}.mx-feature-label{fill:#a9adcf;font-size:10px}.mx-feature-label.active{fill:#d1f8f7}
+.mx-nav-icon{width:20px;height:20px;border:0;border-radius:0;color:#c4c8d8}.mx-nav.active .mx-nav-icon{background:none;color:#22d8dc}
+@media(max-width:600px){.mx-topology-panel{padding:10px}.mx-topology-svg{width:900px;height:300px;min-width:900px}}
 EOF_CSS
+if [ -f /etc/config/uhttpd ] && [ "$(uci -q get uhttpd.mx_dashboard 2>/dev/null || true)" = uhttpd ];then
+    uci -q delete uhttpd.mx_dashboard
+    uci -q commit uhttpd
+    UI_HTTP_CHANGED=1
+fi
+rm -f /www/luci-static/resources/view/mx4200/launch.js /www/mx-dashboard/index.html /www/mx-dashboard/app.js /www/mx-dashboard/app.css
+rmdir /www/mx-dashboard 2>/dev/null || true
+if [ -f /etc/sysupgrade.conf ];then
+    grep -vxF -e /www/luci-static/resources/view/mx4200/launch.js -e /www/mx-dashboard/index.html -e /www/mx-dashboard/app.js -e /www/mx-dashboard/app.css /etc/sysupgrade.conf > /tmp/mx-ui-sysupgrade.$$ || true
+    mv /tmp/mx-ui-sysupgrade.$$ /etc/sysupgrade.conf
+fi
 touch /etc/sysupgrade.conf
-for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
+    for F in /usr/libexec/rpcd/mx.ui /usr/sbin/mxscan-ui /usr/sbin/mxsetup-ui /usr/share/rpcd/acl.d/mx-ui.json /usr/share/luci/menu.d/mx-ui.json /www/luci-static/resources/view/mx4200/manager.js /www/luci-static/resources/view/mx4200/dashboard.js /www/luci-static/resources/mx4200/dashboard.css; do
     grep -qxF "$F" /etc/sysupgrade.conf || printf '%s\n' "$F" >> /etc/sysupgrade.conf
 done
 rm -f /tmp/luci-indexcache.*.json
 if [ "$UI_ALREADY_INSTALLED" != 1 ] && [ "${MX_UI_RPC_UPDATE:-0}" != 1 ];then
     /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+fi
+if [ "$UI_HTTP_CHANGED" = 1 ] || { [ "$UI_ALREADY_INSTALLED" != 1 ] && [ "${MX_UI_RPC_UPDATE:-0}" != 1 ]; };then
     (sleep 3; /etc/init.d/uhttpd restart >/dev/null 2>&1) </dev/null >/dev/null 2>&1 &
 fi
