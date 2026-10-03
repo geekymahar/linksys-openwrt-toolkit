@@ -12,7 +12,7 @@ The firmware builder runs `uci-defaults.sh` on a clean first boot. It writes loc
 | `packages.txt` | Space-separated firmware package selection. |
 | `modules/provision/install.sh` and `.sha256` | Firmware-pinned first-boot release verifier and manual module installer. |
 | `release/manifest.txt`, `.sig`, and `build.py` | Signed release index and local release preparation tool. |
-| `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer. |
+| `modules/auto/install.sh` and `.sha256` | Optional saved-mode switching installer and WPS-based boot-slot selector. |
 | `modules/samba/install.sh` and `.sha256` | Optional LuCI Samba account manager installer. |
 | `modules/led/rev3/install.sh` and `.sha256` | **Selected** advanced LED installer. |
 | `modules/led/rev2/` | Earlier LED revision; present but not selected by the bootstrap. |
@@ -195,9 +195,7 @@ Optional package additions require a firmware rebuild and flash; signed module u
 
 ## Linksys dual-image recovery and persistence
 
-If `fw_printenv`/`fw_setenv` are available and the boot environment exposes `auto_recovery`, first boot sets it to `no` so repeated failed boots do not automatically switch firmware partitions. `maxpartialboots` is left unchanged. `luci-app-advanced-reboot` is included and supports MX4200 V2/P2; use **System → Advanced Reboot** for an intentional partition switch. The Auto module also installs a WPS-button handler: 15 presses within 60 seconds ask Advanced Reboot to switch to the other detected partition, then reboot. Unsupported devices or a missing partition are refused. WPS button event mapping must be confirmed on the target hardware.
-
-On an already-provisioned router, changing `uci-defaults.sh` alone does not rerun first-boot setup. Install the updated signed Auto module with `mxmod auto-once` to set `auto_recovery=no` and install the WPS handler, or apply the setting manually with `fw_setenv auto_recovery no` if that variable exists.
+If `fw_printenv`/`fw_setenv` are available and the boot environment exposes `auto_recovery`, first boot sets it to `no`, preventing repeated failed boots from automatically switching images. Installing or updating the optional Auto module also disables it, which applies the change to already-provisioned routers. The module does not change `maxpartialboots`. To switch deliberately, use **System → Advanced Reboot** in LuCI or press WPS 15 times within 60 seconds; the latter is installed with the Auto module, asks Advanced Reboot to verify and select the other available partition, then reboots. This uses a separate button-hotplug listener and does not replace the normal WPS handler. `luci-app-advanced-reboot` is included in the package list.
 
 Profiles, module files, local helper scripts, and configuration paths are added to `/etc/sysupgrade.conf`. Whether an individual firmware upgrade preserves them also depends on the chosen sysupgrade settings. On a clean flash or factory reset, the first-boot script recreates the initial router configuration and its baseline profile. An upgrade that preserves settings skips this destructive setup.
 

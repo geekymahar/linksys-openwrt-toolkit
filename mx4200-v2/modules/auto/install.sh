@@ -2,8 +2,8 @@
 # Install saved-mode switching locally; the service never downloads anything.
 case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mx4200v2*) ;; *) echo 'MX4200 V2/P2 required' >&2; exit 1 ;; esac
 set -e
-if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1 && fw_printenv auto_recovery >/dev/null 2>&1;then
-	fw_setenv auto_recovery no >/dev/null 2>&1 || logger -t mx "Could not disable automatic partition recovery"
+if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1 && fw_printenv auto_recovery >/dev/null 2>&1; then
+	fw_setenv auto_recovery no || { echo 'Unable to disable automatic image recovery' >&2; exit 1; }
 fi
 cat > /usr/sbin/mxauto <<'EOF_AUTO'
 #!/bin/sh
@@ -144,12 +144,14 @@ cat > /etc/hotplug.d/button/95-mx-partition <<'EOF_BUTTON'
 [ "${BUTTON:-}" = wps ] && [ "${ACTION:-}" = pressed ] || exit 0
 COUNT_FILE=/tmp/mx-partition-presses
 NOW=$(date +%s)
+case "$NOW" in ''|*[!0-9]*) exit 0;; esac
+OLD_COUNT=0
+OLD_TIME=0
 COUNT=0
 if [ -r "$COUNT_FILE" ];then
 	read -r OLD_COUNT OLD_TIME < "$COUNT_FILE"
-	case "$OLD_COUNT" in ''|*[!0-9]*) OLD_COUNT=0;;esac
-	case "$OLD_TIME" in ''|*[!0-9]*) OLD_TIME=0;;esac
-	[ "$NOW" -ge "$OLD_TIME" ] && [ "$((NOW-OLD_TIME))" -le 60 ] && COUNT=$OLD_COUNT
+	case "$OLD_COUNT:$OLD_TIME" in *[!0-9:]*|:*|*:) OLD_COUNT=0;OLD_TIME=0;;esac
+	if [ "$NOW" -ge "$OLD_TIME" ] && [ "$((NOW-OLD_TIME))" -le 60 ];then COUNT=$OLD_COUNT;fi
 fi
 COUNT=$((COUNT+1));printf '%s %s\n' "$COUNT" "$NOW" > "$COUNT_FILE"
 [ "$COUNT" -ge 15 ] || exit 0

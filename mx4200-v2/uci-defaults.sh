@@ -783,7 +783,7 @@ fi
 /etc/init.d/mxb start >/dev/null 2>&1 || true
 if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1; then
 if fw_printenv auto_recovery >/dev/null 2>&1; then
-fw_setenv auto_recovery no || logger -t mx 'Could not disable automatic partition recovery'
+fw_setenv auto_recovery no || logger -t mx 'Unable to disable automatic image recovery'
 fi
 fi
 touch /etc/sysupgrade.conf
