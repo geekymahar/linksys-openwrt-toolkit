@@ -1,0 +1,2 @@
+#!/bin/sh
+[ "$INTERFACE" = lan ] && case "$ACTION" in ifup | ifupdate) /usr/sbin/mxd mgmt ;; esac

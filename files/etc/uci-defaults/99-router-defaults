@@ -1,0 +1,4 @@
+#!/bin/sh
+# OpenWrt removes the overlay copy only after successful initialization.
+. /usr/lib/router-defaults/core.sh || exit 1
+exec /usr/lib/router-defaults/initialize.sh

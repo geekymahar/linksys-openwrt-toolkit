@@ -1,0 +1,147 @@
+#!/bin/sh
+. /usr/lib/mxc
+station_interface() {
+    section=$1
+    radio="$(uci -q get wireless.$section.device)"
+    J="$(ubus call network.wireless status 2>/dev/null)"
+    for iteration in 0 1 2 3; do
+        [ "$(echo "$J" | jsonfilter -e "@.$radio.interfaces[$iteration].section" 2>/dev/null)" = "$section" ] && {
+            echo "$J" | jsonfilter -e "@.$radio.interfaces[$iteration].ifname"
+            return
+        }
+    done
+}
+station_connected() {
+    interface="$(station_interface $1)"
+    [ -n "$interface" ] && iw dev "$interface" link 2>/dev/null | grep -q '^Connected to '
+}
+rediscover_backhaul() {
+    section=$1
+    mode_name="$(current_mode)"
+    case "$mode_name" in wds | repeater) ;; *) return ;; esac
+    case "$(uci -q get wireless.$section.encryption)" in psk2 | sae | sae-mixed) ;; *) return ;; esac
+    station_connected "$section" && return
+    radio="$(uci -q get wireless.$section.device)"
+    ssid="$(uci -q get wireless.$section.ssid)"
+    [ -n "$radio" ] && [ -n "$ssid" ] && [ "$(uci -q get wireless.$section.disabled)" = 0 ] || return
+    temporary_file=/tmp/mxb.$$
+    scan_radio "$radio" "$temporary_file" 20 || {
+        rm -f "$temporary_file"
+        return
+    }
+    [ "$(current_mode)" = "$mode_name" ] && [ "$(uci -q get wireless.$section.device)" = "$radio" ] && [ "$(uci -q get wireless.$section.ssid)" = "$ssid" ] && [ "$(uci -q get wireless.$section.disabled)" = 0 ] && ! station_connected "$section" || {
+        rm -f "$temporary_file"
+        return
+    }
+    LINE="$(awk -F '\t' -v s="$ssid" '$1==s{print $2"\t"$4"\t"$5;exit}' "$temporary_file")"
+    rm -f "$temporary_file"
+    choice=$(printf '%s\n' "$LINE" | cut -f1)
+    encryption=$(printf '%s\n' "$LINE" | cut -f2)
+    bridge_section=$(printf '%s\n' "$LINE" | cut -f3)
+    case "$choice" in '' | *[!0-9]*) return ;; esac
+    [ "$(scan_encryption_to_uci "$encryption")" = "$(uci -q get wireless.$section.encryption)" ] || return
+    [ -n "$bridge_section" ] || return
+    CHANGED=0
+    [ "$(uci -q get wireless.$section.bssid)" = "$bridge_section" ] || {
+        uci set wireless.$section.bssid="$bridge_section"
+        CHANGED=1
+    }
+    [ "$(uci -q get wireless.$radio.channel)" = "$choice" ] || {
+        uci set wireless.$radio.channel="$choice"
+        CHANGED=1
+    }
+    [ "$CHANGED" = 1 ] && {
+        uci commit wireless
+        wifi reload "$radio"
+    }
+}
+select_wds_backhaul() {
+    value="$(station_interface mx_primary)"
+    bridge_section="$(station_interface mx_backup)"
+    [ -n "$value" ] && ip link set "$value" nomaster 2>/dev/null
+    [ -n "$bridge_section" ] && ip link set "$bridge_section" nomaster 2>/dev/null
+    interface="$value"
+    [ "$1" = backup ] && interface="$bridge_section"
+    if [ -n "$interface" ] && ip link set "$interface" master br-lan 2>/dev/null; then
+        ubus call network.interface.lan renew >/dev/null 2>&1
+    fi
+    echo "$1" >/tmp/mx4200-backhaul-active
+}
+case "$1" in
+    primary | backup)
+        selected_value=$1
+        [ "$selected_value" = backup ] && uci -q get wireless.mx_backup >/dev/null || [ "$selected_value" = primary ] || exit 1
+        uci set "wireless.mx_primary.disabled=$([ "$selected_value" = primary ] && echo 0 || echo 1)"
+        uci -q get wireless.mx_backup >/dev/null && uci set "wireless.mx_backup.disabled=$([ "$selected_value" = backup ] && echo 0 || echo 1)"
+        uci commit wireless
+        wifi reload
+        [ "$(current_mode)" = wds ] && {
+            sleep 2
+            select_wds_backhaul "$selected_value"
+        }
+        ;;
+    auto)
+        uci set wireless.mx_primary.disabled=0
+        uci -q get wireless.mx_backup >/dev/null && uci set wireless.mx_backup.disabled=0
+        uci commit wireless
+        wifi reload
+        ;;
+    guard)
+        answer="$(cat /tmp/mx4200-backhaul-active 2>/dev/null || echo primary)"
+        section=0
+        password=29
+        SCAN_PID=''
+        trap '[ -z "$SCAN_PID" ] || kill "$SCAN_PID" 2>/dev/null' EXIT
+        while sleep 1; do
+            mode_name="$(current_mode)"
+            case "$mode_name" in router | ap) continue ;; esac
+            value=0
+            bridge_section=0
+            station_connected mx_primary && value=1
+            station_connected mx_backup && bridge_section=1
+            if [ "$mode_name" = wds ]; then
+                device="$(uci -q get wireless.mx_primary.disabled)$(uci -q get wireless.mx_backup.disabled)"
+                if [ "$device" = 00 ]; then
+                    if [ "$answer" = primary ]; then
+                        [ "$value" = 0 ] && [ "$bridge_section" = 1 ] && {
+                            answer=backup
+                            section=0
+                            select_wds_backhaul backup
+                        }
+                    else
+                        [ "$value" = 1 ] && section=$((section + 1)) || section=0
+                        [ "$section" -ge "$BACKHAUL_RETURN_DELAY" ] && {
+                            answer=primary
+                            section=0
+                            select_wds_backhaul primary
+                        }
+                        [ "$bridge_section" = 1 ] || [ "$value" = 0 ] || {
+                            answer=primary
+                            section=0
+                            select_wds_backhaul primary
+                        }
+                    fi
+                else
+                    [ "$(uci -q get wireless.mx_primary.disabled)" = 0 ] && answer=primary || answer=backup
+                fi
+                interface="$(station_interface mx_$answer)"
+                [ -n "$interface" ] && [ -e "/sys/class/net/br-lan/brif/$interface" ] || select_wds_backhaul "$answer"
+            fi
+            password=$((password + 1))
+            if [ "$password" -ge "$BACKHAUL_SCAN_INTERVAL" ]; then
+                if [ -z "$SCAN_PID" ] || ! kill -0 "$SCAN_PID" 2>/dev/null; then
+                    {
+                        [ "$bridge_section" = 1 ] || rediscover_backhaul mx_backup
+                        [ "$value" = 1 ] || rediscover_backhaul mx_primary
+                    } &
+                    SCAN_PID=$!
+                fi
+                password=0
+            fi
+        done
+        ;;
+    *)
+        echo 'mxb: auto|primary|backup|guard'
+        exit 1
+        ;;
+esac

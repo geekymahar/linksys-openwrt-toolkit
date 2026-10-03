@@ -1,0 +1,11 @@
+#!/bin/sh
+. /usr/lib/mxc
+[ "$(current_mode)" = wds ] || {
+    echo 'Not WDS mode'
+    exit 1
+}
+ip -4 addr show dev br-lan
+ip -4 route show default dev br-lan
+ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@["dns-server"][*]' | sed 's/^/DNS: /'
+printf 'WDS health: '
+/usr/sbin/mxw

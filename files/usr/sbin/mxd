@@ -1,0 +1,82 @@
+#!/bin/sh
+. /usr/lib/router-defaults/core.sh || exit 1
+update_management_address() {
+    case "$(cat /etc/mx4200/mode 2>/dev/null)" in ap | wds) ;; *) return 0 ;; esac
+    interface="$(ip -4 -o addr show dev br-lan 2>/dev/null | awk '$3=="inet"{print $4}')"
+    [ -n "$interface" ] || return 0
+    radio="$(
+        ip -4 route show table main 2>/dev/null
+        for selected_value in $interface; do
+            echo "$selected_value dev br-lan"
+        done
+    )"
+    management_subnet_free() {
+        printf '%s\n' "$radio" | awk -v a="$1" '
+function n(s,v){split(s,v,".");return v[1]*16777216+v[2]*65536+v[3]*256+v[4]}
+BEGIN{x=n(a)}
+$1~/^[0-9]+\./&&$0!~/ dev br-mgmt( |$)/{
+split($1,p,"/");m=2^(32-(p[2]?p[2]:32));y=n(p[1]);
+if(int(x/m)==int(y/m)||int(x/256)==int(y/256))exit 1
+}'
+    }
+    value=''
+    for answer in "$MGMT_IP" $MGMT_FALLBACK_IPS; do
+        management_subnet_free "$answer" && {
+            value="$answer"
+            break
+        }
+    done
+    [ -n "$value" ] || {
+        logger -t mxmgmt 'No free management subnet; keeping current IP'
+        return 1
+    }
+    [ "$(uci -q get network.mgmt.ipaddr)" = "$value" ] && return 0
+    uci set network.mgmt.ipaddr="$value" && uci commit network || return 1
+    ifdown mgmt
+    ifup mgmt || return 1
+    /etc/init.d/dnsmasq restart || return 1
+    logger -t mxmgmt "Management IP: $value"
+}
+[ "${1:-}" = mgmt ] && {
+    update_management_address
+    exit $?
+}
+STATE='/tmp/mx4200-dns-owned'
+while true; do
+    if ping -c 1 -W 1 "$DNS_FALLBACK_1" >/dev/null 2>&1; then
+        OK=0
+        for device in $(awk '/^nameserver/{print $2}' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | grep -vE '^(127\.|::1$)'); do
+            dig +time=1 +tries=1 +short @"$device" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && {
+                OK=1
+                break
+            }
+        done
+        EXPLICIT="$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)"
+        if [ "$OK" = 1 ]; then
+            if [ -f "$STATE" ]; then
+                uci set dhcp.@dnsmasq[0].noresolv='0'
+                uci -q delete dhcp.@dnsmasq[0].server
+                uci commit dhcp
+                /etc/init.d/dnsmasq restart
+                rm -f "$STATE"
+            fi
+        elif [ -z "$EXPLICIT" ] || [ -f "$STATE" ]; then
+            uci set dhcp.@dnsmasq[0].noresolv='1'
+            uci -q delete dhcp.@dnsmasq[0].server
+            uci add_list dhcp.@dnsmasq[0].server="$DNS_FALLBACK_1"
+            uci add_list dhcp.@dnsmasq[0].server="$DNS_FALLBACK_2"
+            uci commit dhcp
+            /etc/init.d/dnsmasq restart
+            touch "$STATE"
+        fi
+    fi
+    if command -v tailscale >/dev/null 2>&1 && [ ! -f /tmp/mx-ts-init ] && tailscale status --json 2>/dev/null | grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"'; then
+        if [ "$TAILSCALE_ADVERTISE_EXIT_NODE" = true ]; then
+            tailscale set --advertise-exit-node --accept-routes="$TAILSCALE_ACCEPT_ROUTES" >/dev/null 2>&1 && touch /tmp/mx-ts-init
+        else
+            tailscale set --accept-routes="$TAILSCALE_ACCEPT_ROUTES" >/dev/null 2>&1 && touch /tmp/mx-ts-init
+        fi
+    fi
+    update_management_address
+    sleep "$DNS_INTERVAL"
+done

@@ -1,0 +1,60 @@
+#!/bin/sh
+. /usr/lib/mxc
+date +%s >/tmp/mxauto-manual
+printf 'AP Wi-Fi name [%s]: ' "$WIFI_PREFIX"
+IFS= read -r ssid || exit 1
+ssid=${ssid:-$WIFI_PREFIX}
+[ "$(printf %s "$ssid" | LC_ALL=C wc -c)" -le 21 ] || {
+    echo 'Name too long for -Management SSID'
+    exit 1
+}
+read_secret "Password for $ssid Wi-Fi: "
+value=$SECRET
+read_secret "Password for ${ssid}-Management Wi-Fi: "
+password=$SECRET
+for setting in "$value" "$password"; do
+    valid_wifi_password "$setting" || {
+        echo 'Passwords must be 8-63 characters'
+        exit 1
+    }
+done
+save_current_profile
+wifi_clear
+configure_radio_defaults
+bridge_section="$(find_bridge_section br-lan)"
+[ -n "$bridge_section" ] || {
+    echo 'br-lan not found'
+    exit 1
+}
+uci -q delete "${bridge_section}.ports"
+for interface in lan1 lan2 lan3; do
+    uci add_list "${bridge_section}.ports=$interface"
+done
+bridge_wan_port || exit 1
+configure_bridge_dhcp_client
+for interface in wwanp wwanb wdsp wdsb usbwan; do
+    uci -q delete "network.$interface"
+done
+configure_management_network "$MGMT_IP" "$LAN_NETMASK" "$DHCP_START"
+configure_access_point mx_ap2 "$RADIO_24" lan "$ssid" "$value"
+configure_access_point mx_ap5 "$RADIO_5G" lan "$ssid" "$value"
+configure_access_point mx_ap_high "$RADIO_5G_MAX" lan "$ssid" "$value"
+configure_access_point mx_mgmt "$RADIO_24" mgmt "${ssid}-Management" "$password"
+set_option wireless.mx_mgmt.isolate=1
+delete_firewall_zone uplink
+ensure_lan_zone
+delete_non_vpn_forwardings lan
+configure_management_firewall
+zone_section="$(find_firewall_zone wan)"
+[ -n "$zone_section" ] && {
+    for interface in lan wwanp wwanb usbwan; do
+        uci -q del_list "${zone_section}.network=$interface"
+    done
+}
+commit_mode_configuration
+echo ap >/etc/mx4200/mode
+save_profile ap
+prompt_auto_priority ap
+reload_mode_services
+echo "Wired AP: all Ethernet ports are LAN; main router supplies DHCP."
+echo "Management SSID: ${ssid}-Management | IP: $(uci -q get network.mgmt.ipaddr)"

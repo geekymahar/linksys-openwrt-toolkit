@@ -1,0 +1,14 @@
+alias mxstatus='/usr/sbin/mxm status'
+alias mxrouter='/usr/sbin/mxm router'
+alias mxrepeater='/usr/sbin/mxm repeater'
+alias mxap='/usr/sbin/mxm ap'
+alias mxusb='/usr/sbin/mxm usb'
+alias mxled='/usr/sbin/mxm led'
+alias mxhelp='/usr/sbin/mxm help'
+case "$-" in
+    *i*)
+        echo
+        echo 'MX4200: run mx for guided router, repeater/WDS and USB setup.'
+        echo 'Quick: mxstatus mxrouter mxrepeater mxap mxusb mxled | mxhelp'
+        ;;
+esac

@@ -1,0 +1,117 @@
+#!/bin/sh
+# Signed, explicitly requested updates. Never called automatically at boot.
+. /usr/lib/router-defaults/core.sh || exit 1
+
+fetch_release_file() {
+    case "$1" in
+        files/*) url="${RELEASE_BASE%/mx4200-v2}/$1" ;;
+        *) url="$RELEASE_BASE/embedded-release/$1" ;;
+    esac
+    uclient-fetch -q -T 15 -O "$2" "$url" 2>/dev/null ||
+        curl -fsSL --connect-timeout 5 --max-time 15 -o "$2" "$url"
+}
+
+module_status() {
+    case "$1" in
+        led) executable=/usr/bin/mxls ;;
+        auto) executable=/usr/sbin/mxauto ;;
+        samba) executable=/usr/libexec/rpcd/mx.samba ;;
+    esac
+    [ -x "$executable" ] || {
+        printf '%s unavailable\n' "$1"
+        return 1
+    }
+    printf '%s installed in firmware\n' "$1"
+}
+
+cleanup() {
+    result=$?
+    trap - EXIT HUP INT TERM
+    if [ "$installed" = 0 ] && [ -f "$stage/backup.tar" ]; then
+        tar -xf "$stage/backup.tar" -C / || warn 'Manual update rollback failed'
+    fi
+    rm -rf "$stage" "$lock"
+    exit "$result"
+}
+
+update_module() {
+    module_name=$1
+    require_target || return 1
+    require_command openssl || return 1
+    umask 077
+    lock=/tmp/router-defaults-update.lock
+    mkdir "$lock" 2>/dev/null || {
+        error 'Another update is running'
+        return 1
+    }
+    stage=$lock/stage
+    mkdir -p "$stage" || return 1
+    installed=0
+    trap cleanup EXIT
+    trap 'exit 1' HUP INT TERM
+    log "Downloading signed $module_name update"
+    fetch_release_file manifest.txt "$stage/manifest.txt" || return 1
+    fetch_release_file manifest.sig "$stage/manifest.sig" || return 1
+    openssl pkeyutl -verify -pubin -inkey /usr/share/router-defaults/release.pub -rawin \
+        -in "$stage/manifest.txt" -sigfile "$stage/manifest.sig" >/dev/null 2>&1 || {
+        error 'Release signature verification failed'
+        return 1
+    }
+    # Every signed path must also be in the firmware's immutable allowlist.
+    awk 'NR==1 {if ($0!="MX4200V2-EMBEDDED 1") exit 1; next}
+         NF!=4 || $1!~/^(auto|samba|led|shared)$/ || length($2)!=64 || $2~/[^0-9a-f]/ || $3!~/^(644|755)$/ || $4~/[^a-zA-Z0-9_.\/-]/ || $4~/\.\./ || $4~/^\// || seen[$4]++ {exit 1}
+         END {if(NR<2) exit 1}' "$stage/manifest.txt" || return 1
+    : >"$stage/install-list"
+    while read -r group hash permissions relative; do
+        [ "$group" = MX4200V2-EMBEDDED ] && continue
+        grep -qxF "$group $permissions $relative" /usr/share/router-defaults/update-files.txt || {
+            error "Unsupported update file: $relative; rebuild firmware for new dependencies"
+            return 1
+        }
+        [ "$group" = "$module_name" ] || [ "$group" = shared ] || continue
+        [ ! -L "/$relative" ] && [ -f "/$relative" ] || return 1
+        mkdir -p "$stage/$(dirname "$relative")" || return 1
+        fetch_release_file "files/$relative" "$stage/$relative" || return 1
+        [ "$(sha256sum "$stage/$relative" | awk '{print $1}')" = "$hash" ] || return 1
+        case "$(head -n 1 "$stage/$relative")" in '#!/bin/sh'*) sh -n "$stage/$relative" || return 1 ;; esac
+        printf '%s %s\n' "$permissions" "$relative" >>"$stage/install-list"
+    done <"$stage/manifest.txt"
+    [ -s "$stage/install-list" ] || return 1
+    set --
+    while read -r permissions relative; do
+        set -- "$@" "$relative"
+    done <"$stage/install-list"
+    tar -cf "$stage/backup.tar" -C / "$@" || return 1
+    while read -r permissions relative; do
+        cp "$stage/$relative" "/$relative.new" || return 1
+        chmod "$permissions" "/$relative.new" || return 1
+        mv "/$relative.new" "/$relative" || return 1
+    done <"$stage/install-list"
+    case "$module_name" in
+        led) service_restart mxl || return 1 ;;
+        auto) service_restart mxauto && service_restart mxroutehealth || return 1 ;;
+        samba) service_restart rpcd || return 1 ;;
+    esac
+    installed=1
+    mkdir -p /etc/mx4200/modules
+    cp "$stage/manifest.txt" "/etc/mx4200/modules/$module_name.manifest"
+    log "Signed $module_name update installed; central config and profiles unchanged"
+}
+
+main() {
+    case "${1:-}" in
+        status) module_status led ;;
+        auto-status) module_status auto ;;
+        samba-status) module_status samba ;;
+        once) update_module led ;;
+        auto-once) update_module auto ;;
+        samba-once) update_module samba ;;
+        provision) error 'Core provisioning is baked into firmware; use a firmware upgrade' ;;
+        *)
+            printf 'mxmod: status|auto-status|samba-status|once|auto-once|samba-once\n'
+            return 1
+            ;;
+    esac
+}
+
+main "$@"

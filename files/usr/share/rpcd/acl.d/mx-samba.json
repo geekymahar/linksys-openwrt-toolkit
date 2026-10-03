@@ -1,0 +1,7 @@
+{
+  "mx-samba": {
+    "description": "Manage dedicated Samba accounts",
+    "read": { "ubus": { "mx.samba": [ "users" ] } },
+    "write": { "ubus": { "mx.samba": [ "add", "password", "disable", "enable", "remove" ] } }
+  }
+}

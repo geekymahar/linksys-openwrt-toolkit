@@ -1,0 +1,355 @@
+#!/bin/sh
+. /usr/lib/router-defaults/core.sh || exit 1
+
+LED=/usr/bin/mxls
+SF=/tmp/mx4200-led-state
+ST=/tmp/mx4200-led-state.new
+CURVE='15 20 30 45 65 90 120 150 180 205 220 205 180 150 120 90 65 45 30 20 15'
+D0=.095
+D1=.060
+D2=.036
+D3=.019
+DF=.080
+read_led_state() {
+    STATE=online
+    LEVEL=0
+    TS_ACTIVE=0
+    WG_ACTIVE=0
+    OVPN_ACTIVE=0
+    UPLINK=primary
+    [ -f "$SF" ] && . "$SF"
+}
+animation_delay() {
+    case "$1" in 0) echo "$D0" ;; 1) echo "$D1" ;; 2) echo "$D2" ;; *) echo "$D3" ;; esac
+}
+show_color() {
+    choice="$1"
+    brightness="$2"
+    case "$choice" in green) "$LED" rgb 0 "$brightness" 0 ;; blue) "$LED" rgb 0 0 "$brightness" ;; purple) "$LED" rgb "$brightness" 0 "$brightness" ;; orange)
+        openvpn_bytes=$((brightness * 70 / 255))
+        [ "$openvpn_bytes" -lt 1 ] && openvpn_bytes=1
+        "$LED" rgb "$brightness" "$openvpn_bytes" 0
+        ;;
+    yellow)
+        openvpn_bytes=$((brightness * 220 / 255))
+        "$LED" rgb "$brightness" "$openvpn_bytes" 0
+        ;;
+    red) "$LED" rgb "$brightness" 0 0 ;; teal)
+        openvpn_bytes=$((brightness * 180 / 255))
+        value=$((brightness * 120 / 255))
+        "$LED" rgb 0 "$openvpn_bytes" "$value"
+        ;;
+    white) "$LED" rgb "$brightness" "$brightness" "$brightness" ;; esac
+}
+animate_breathing() {
+    choice="$1"
+    EXPECT="$2"
+    for brightness in $CURVE; do
+        read_led_state
+        [ "$STATE" = "$EXPECT" ] || return
+        show_color "$choice" "$brightness"
+        sleep "$(animation_delay "$LEVEL")"
+    done
+}
+animate_beat() {
+    choice="$1"
+    EXPECT="$2"
+    for brightness in 220 35 220 15; do
+        read_led_state
+        [ "$STATE" = "$EXPECT" ] || return
+        show_color "$choice" "$brightness"
+        sleep "$DF"
+    done
+    sleep .35
+}
+dfs_blink() {
+    for brightness in 220 0 220 0; do
+        read_led_state
+        [ "$STATE" = dfs_wait ] || return
+        show_color purple "$brightness"
+        sleep .15
+    done
+    sleep .65
+}
+boot_ready() {
+    mode_name="$(cat /etc/mx4200/mode 2>/dev/null || echo router)"
+    case "$mode_name" in wds | ap)
+        DEV=br-mgmt
+        IP="$(uci -q get network.mgmt.ipaddr)"
+        ;;
+    *)
+        DEV=br-lan
+        IP="$(uci -q get network.lan.ipaddr)"
+        ;;
+    esac
+    [ -n "$IP" ] || return 1
+    ip link show "$DEV" >/dev/null 2>&1 || return 1
+    ip -4 addr show dev "$DEV" 2>/dev/null | grep -q " $IP/" || return 1
+    pgrep dnsmasq >/dev/null 2>&1 || return 1
+    [ ! -x /etc/init.d/uhttpd ] || pgrep uhttpd >/dev/null 2>&1
+}
+iteration=0
+while ! boot_ready && [ "$iteration" -lt 24 ]; do
+    for choice in red green blue yellow purple teal; do
+        case "$choice" in red) "$LED" rgb 180 0 0 ;; green) "$LED" rgb 0 180 0 ;; blue) "$LED" rgb 0 0 180 ;; yellow) "$LED" rgb 180 155 0 ;; purple) "$LED" rgb 180 0 180 ;; teal) "$LED" rgb 0 150 100 ;; esac
+        sleep .18
+        boot_ready && break
+    done
+    iteration=$((iteration + 1))
+done
+interface_bytes() {
+    [ -r "/sys/class/net/$1/statistics/rx_bytes" ] || {
+        echo 0
+        return
+    }
+    received_bytes="$(cat "/sys/class/net/$1/statistics/rx_bytes")"
+    transmitted_bytes="$(cat "/sys/class/net/$1/statistics/tx_bytes")"
+    echo $((${received_bytes:-0} + ${transmitted_bytes:-0}))
+}
+wireguard_interfaces() {
+    command -v wg >/dev/null 2>&1 && wg show interfaces 2>/dev/null
+}
+wireguard_active() {
+    for interface in $(wireguard_interfaces); do
+        wg show "$interface" latest-handshakes 2>/dev/null | awk '$2>0{x=1}END{exit !x}' && return 0
+    done
+    return 1
+}
+wireguard_bytes() {
+    total_bytes=0
+    for interface in $(wireguard_interfaces); do
+        brightness="$(interface_bytes "$interface")"
+        total_bytes=$((total_bytes + brightness))
+    done
+    echo "$total_bytes"
+}
+openvpn_interfaces() {
+    for value in /sys/class/net/tun* /sys/class/net/tap*; do
+        [ -e "$value" ] && basename "$value"
+    done
+}
+openvpn_active() {
+    pidof openvpn >/dev/null 2>&1 && [ -n "$(openvpn_interfaces)" ]
+}
+openvpn_bytes() {
+    total_bytes=0
+    for interface in $(openvpn_interfaces); do
+        brightness="$(interface_bytes "$interface")"
+        total_bytes=$((total_bytes + brightness))
+    done
+    echo "$total_bytes"
+}
+wds_station_interface() {
+    for interface in $(iw dev 2>/dev/null | awk '/Interface/{i=$2}/type managed/{print i}'); do
+        [ -e "/sys/class/net/br-lan/brif/$interface" ] && iw dev "$interface" link 2>/dev/null | grep -q '^Connected to ' && {
+            echo "$interface"
+            return
+        }
+    done
+}
+station_interface() {
+    section="$1"
+    radio="$(uci -q get wireless.$section.device)"
+    [ -n "$radio" ] || return
+    J="$(ubus call network.wireless status 2>/dev/null)"
+    for iteration in 0 1 2 3; do
+        [ "$(printf '%s\n' "$J" | jsonfilter -e "@.$radio.interfaces[$iteration].section" 2>/dev/null)" = "$section" ] && {
+            printf '%s\n' "$J" | jsonfilter -e "@.$radio.interfaces[$iteration].ifname" 2>/dev/null
+            return
+        }
+    done
+}
+station_active() {
+    interface="$(station_interface "$1")"
+    [ -n "$interface" ] && iw dev "$interface" link 2>/dev/null | grep -q '^Connected to '
+}
+route_device() {
+    non_vpn_default_device
+}
+network_interface_device() {
+    ubus call "network.interface.$1" status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null
+}
+uplink_kind() {
+    DEV="$2"
+    [ -n "$DEV" ] || {
+        echo none
+        return
+    }
+    USB_DEV="$(network_interface_device usbwan)"
+    [ -n "$USB_DEV" ] && [ "$DEV" = "$USB_DEV" ] && {
+        echo usb
+        return
+    }
+    if [ "$1" = wds ] && [ "$DEV" = br-lan ]; then
+        case "$(cat /tmp/mx4200-backhaul-active 2>/dev/null)" in backup) echo backup ;; *) echo primary ;; esac
+        return
+    fi
+    BACKUP_DEV="$(network_interface_device wwanb)"
+    [ -n "$BACKUP_DEV" ] && [ "$DEV" = "$BACKUP_DEV" ] && echo backup || echo primary
+}
+wds_health() {
+    case "$1" in GREEN) STATE=online ;; RED) STATE=link_down ;; YELLOW) STATE=dns_fail ;; *) STATE=no_internet ;; esac
+}
+radio_waiting_for_dfs() {
+    J="$(ubus call network.wireless status 2>/dev/null)" || return 1
+    for AP in $(printf '%s\n' "$J" | jsonfilter -e "@.$RADIO_5G_MAX.interfaces[*].ifname" 2>/dev/null); do
+        [ "$(ubus call "hostapd.$AP" get_status 2>/dev/null | jsonfilter -e '@.status' 2>/dev/null)" = DFS ] && return 0
+    done
+    return 1
+}
+uplink_cue() {
+    case "$UPLINK" in backup) show_color teal 160 ;; usb) show_color white 160 ;; *) return ;; esac
+    sleep .18
+}
+traffic_level() {
+    brightness="$1"
+    if [ "$brightness" -lt "${LED_IDLE_THRESHOLD:-4096}" ]; then
+        echo 0
+    elif [ "$brightness" -lt "${LED_LIGHT_THRESHOLD:-32768}" ]; then
+        echo 1
+    elif [ "$brightness" -lt "${LED_MEDIUM_THRESHOLD:-262144}" ]; then
+        echo 2
+    else
+        echo 3
+    fi
+}
+write_led_state() {
+    printf "STATE='%s'\nLEVEL='%s'\nTS_ACTIVE='%s'\nWG_ACTIVE='%s'\nOVPN_ACTIVE='%s'\nUPLINK='%s'\n" "$1" "$2" "$3" "$4" "$5" "$6" >"$ST"
+    mv "$ST" "$SF"
+}
+sampler() {
+    PW=0
+    PT=0
+    PG=0
+    PO=0
+    FIRST=1
+    WH=ORANGE
+    WC=30
+    LAST_WDS_IF=''
+    while true; do
+        mode_name="$(cat /etc/mx4200/mode 2>/dev/null || echo router)"
+        ROUTE_DEV="$(route_device)"
+        UPLINK="$(uplink_kind "$mode_name" "$ROUTE_DEV")"
+        STATE=online
+        IF=''
+        if [ "$mode_name" = wds ] && {
+            [ "$ROUTE_DEV" = br-lan ] || [ -z "$ROUTE_DEV" ]
+        }; then
+            IF="$(wds_station_interface)"
+            if [ -z "$IF" ]; then
+                STATE=link_down
+                LAST_WDS_IF=''
+                WH=ORANGE
+                WC=30
+            elif ! iw dev "$IF" info 2>/dev/null | grep -q '4addr: on' || [ ! -e "/sys/class/net/br-lan/brif/$IF" ]; then
+                STATE=link_down
+                LAST_WDS_IF=''
+                WH=ORANGE
+                WC=30
+            else
+                [ "$IF" = "$LAST_WDS_IF" ] || {
+                    LAST_WDS_IF="$IF"
+                    WC=30
+                }
+                WC=$((WC + 1))
+                if [ "$WC" -ge 30 ]; then
+                    WH="$(/usr/sbin/mxw 2>/dev/null)" || WH=UNKNOWN
+                    WC=0
+                fi
+                wds_health "$WH"
+            fi
+        else
+            LAST_WDS_IF=''
+            IF="$ROUTE_DEV"
+            if [ -z "$IF" ]; then
+                STATE=no_wan
+                [ "$mode_name" = repeater ] && ! station_active mx_primary && ! station_active mx_backup && STATE=link_down
+            elif [ "$mode_name" = repeater ] && iw dev "$IF" info 2>/dev/null | grep -q 'type managed' && ! iw dev "$IF" link 2>/dev/null | grep -q '^Connected to '; then
+                STATE=link_down
+            else
+                DNS_OK=0
+                nslookup "$DNS_TEST_NAME" 127.0.0.1 >/dev/null 2>&1 && DNS_OK=1
+                if ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP1" >/dev/null 2>&1 || ping -I "$IF" -c 1 -W 1 "$LED_TEST_IP2" >/dev/null 2>&1; then
+                    [ "$DNS_OK" = 1 ] || STATE=dns_fail
+                else
+                    STATE=no_internet
+                fi
+            fi
+        fi
+        radio_waiting_for_dfs && STATE=dfs_wait
+        [ -n "$IF" ] && uplink_bytes="$(interface_bytes "$IF")" || uplink_bytes=0
+        [ -d /sys/class/net/tailscale0 ] && tailscale_bytes="$(interface_bytes tailscale0)" || tailscale_bytes=0
+        wireguard_active && wireguard_bytes="$(wireguard_bytes)" || wireguard_bytes=0
+        openvpn_active && openvpn_bytes="$(openvpn_bytes)" || openvpn_bytes=0
+        if [ "$FIRST" = 1 ]; then
+            PW="$uplink_bytes"
+            PT="$tailscale_bytes"
+            PG="$wireguard_bytes"
+            PO="$openvpn_bytes"
+            FIRST=0
+            write_led_state "$STATE" 0 0 0 0 "$UPLINK"
+            sleep "${LED_INTERVAL:-1}"
+            continue
+        fi
+        DW=$((uplink_bytes - PW))
+        DT=$((tailscale_bytes - PT))
+        DG=$((wireguard_bytes - PG))
+        DO=$((openvpn_bytes - PO))
+        [ "$DW" -lt 0 ] && DW=0
+        [ "$DT" -lt 0 ] && DT=0
+        [ "$DG" -lt 0 ] && DG=0
+        [ "$DO" -lt 0 ] && DO=0
+        PW="$uplink_bytes"
+        PT="$tailscale_bytes"
+        PG="$wireguard_bytes"
+        PO="$openvpn_bytes"
+        traffic_level="$(traffic_level "$DW")"
+        TA=0
+        GA=0
+        OA=0
+        [ "$DT" -gt 0 ] && TA=1
+        [ "$DG" -gt 0 ] && GA=1
+        [ "$DO" -gt 0 ] && OA=1
+        write_led_state "$STATE" "$traffic_level" "$TA" "$GA" "$OA" "$UPLINK"
+        sleep "${LED_INTERVAL:-1}"
+    done
+}
+PID=''
+cleanup() {
+    [ -n "$PID" ] && kill "$PID" >/dev/null 2>&1 || true
+    rm -f "$SF" "$ST"
+}
+trap cleanup EXIT INT TERM
+rm -f "$SF" "$ST"
+sampler &
+PID=$!
+"$LED" dimgreen
+while true; do
+    read_led_state
+    case "$STATE" in
+        dfs_wait) dfs_blink ;;
+        link_down)
+            animate_beat red link_down
+            read_led_state
+            [ "$STATE" = link_down ] && animate_beat blue link_down
+            ;;
+        no_wan) animate_beat red no_wan ;;
+        no_internet) animate_beat red no_internet ;;
+        dns_fail) animate_breathing yellow dns_fail ;;
+        online)
+            animate_breathing green online
+            read_led_state
+            [ "$STATE" = online ] || continue
+            uplink_cue
+            read_led_state
+            [ "$STATE" = online ] || continue
+            [ "$TS_ACTIVE" = 1 ] && animate_breathing blue online
+            read_led_state
+            [ "$STATE" = online ] || continue
+            [ "$WG_ACTIVE" = 1 ] && animate_breathing purple online
+            read_led_state
+            [ "$STATE" = online ] || continue
+            [ "$OVPN_ACTIVE" = 1 ] && animate_breathing orange online
+            ;;
+    esac
+done

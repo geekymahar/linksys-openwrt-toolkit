@@ -1,0 +1,85 @@
+#!/bin/sh
+find_led_channel() {
+    choice=$1
+    for led_path in "/sys/class/leds/${choice}:indicator" "/sys/class/leds/${choice}:status" "/sys/class/leds/${choice}" /sys/class/leds/*$choice*; do
+        [ -e "$led_path/brightness" ] && {
+            echo "$led_path"
+            return
+        }
+    done
+}
+red_path="$(find_led_channel red)"
+green_path="$(find_led_channel green)"
+blue_path="$(find_led_channel blue)"
+find_st1202_bus() {
+    case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mx4200v2*) ;; *) return ;; esac
+    [ -f /tmp/mxlb ] && {
+        cat /tmp/mxlb
+        return
+    }
+    command -v i2cget >/dev/null || return
+    for bus_device in /dev/i2c-*; do
+        [ -e "$bus_device" ] || continue
+        bus_number=${bus_device##*-}
+        i2cget -y "$bus_number" 0x58 0x00 >/dev/null 2>&1 && {
+            echo "$bus_number" >/tmp/mxlb
+            echo "$bus_number"
+            return
+        }
+    done
+}
+IB="$(find_st1202_bus)"
+BK=sysfs
+case "$red_path$green_path$blue_path" in *st1202*) IB='' ;; *) [ -n "$IB" ] && BK=st1202 ;; esac
+set_sysfs_channel() {
+    led_path=$1
+    brightness=$2
+    [ -n "$led_path" ] && [ -e "$led_path/brightness" ] || return
+    [ -w "$led_path/trigger" ] && echo none >"$led_path/trigger" 2>/dev/null
+    maximum_brightness="$(cat "$led_path/max_brightness" 2>/dev/null)"
+    case "$maximum_brightness" in '' | *[!0-9]*) maximum_brightness=255 ;; esac
+    echo $((brightness * maximum_brightness / 255)) >"$led_path/brightness"
+}
+initialize_st1202() {
+    [ -e /tmp/mxli ] && return
+    i2cset -y "$IB" 0x58 0x01 0x80 >/dev/null 2>&1 || return 1
+    sleep .02
+    i2cset -y "$IB" 0x58 0x04 0x08
+    i2cset -y "$IB" 0x58 0x01 0x01
+    sleep .02
+    i2cset -y "$IB" 0x58 0x02 0x07
+    i2cset -y "$IB" 0x58 0x03 0x00
+    i2cset -y "$IB" 0x58 0x04 0x08
+    touch /tmp/mxli
+}
+set_rgb() {
+    red_value=$1
+    green_value=$2
+    blue_value=$3
+    if [ "$BK" = st1202 ]; then
+        initialize_st1202 || return
+        GH=$(printf '0x%02x' "$green_value")
+        RH=$(printf '0x%02x' "$red_value")
+        BH=$(printf '0x%02x' "$blue_value")
+        if command -v i2ctransfer >/dev/null; then
+            i2ctransfer -y "$IB" w4@0x58 0x09 "$GH" "$RH" "$BH" >/dev/null 2>&1
+        else
+            i2cset -y "$IB" 0x58 0x09 "$GH"
+            i2cset -y "$IB" 0x58 0x0a "$RH"
+            i2cset -y "$IB" 0x58 0x0b "$BH"
+        fi
+    else
+        set_sysfs_channel "$red_path" "$red_value"
+        set_sysfs_channel "$green_path" "$green_value"
+        set_sysfs_channel "$blue_path" "$blue_value"
+    fi
+}
+case "$1" in
+    rgb) set_rgb "${2:-0}" "${3:-0}" "${4:-0}" ;; red) set_rgb 255 0 0 ;; green) set_rgb 0 255 0 ;; blue) set_rgb 0 0 255 ;; purple) set_rgb 255 0 255 ;; orange) set_rgb 255 70 0 ;; yellow) set_rgb 255 220 0 ;; teal) set_rgb 0 180 120 ;; white) set_rgb 255 255 255 ;; dimred) set_rgb 15 0 0 ;; dimgreen) set_rgb 0 15 0 ;; dimblue) set_rgb 0 0 15 ;; dimpurple) set_rgb 15 0 15 ;; dimorange) set_rgb 15 4 0 ;; standby | dimwhite) set_rgb 15 15 15 ;; off) set_rgb 0 0 0 ;;
+    detect)
+        echo "LED: $BK bus=${IB:-none} R=${red_path:-none} G=${green_path:-none} B=${blue_path:-none}"
+        [ "$BK" = st1202 ] || {
+            [ -n "$red_path$green_path$blue_path" ] && echo 'RGB: READY' || echo 'RGB: NOT READY'
+        }
+        ;;
+    *) exit 1 ;; esac

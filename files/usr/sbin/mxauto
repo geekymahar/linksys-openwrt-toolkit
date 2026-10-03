@@ -1,0 +1,116 @@
+#!/bin/sh
+. /usr/lib/mxc
+PRIORITIES=/etc/mx4200/auto-priority
+PAUSE=/tmp/mxauto-manual
+COOLDOWN=/tmp/mxauto-cooldown
+ordered_profiles() {
+    [ -f "$PRIORITIES" ] || return
+    awk '$1~/^(router|wds|repeater|ap)$/ && $2~/^[1-9]$/ {print $2,$1}' "$PRIORITIES" | sort -n | while read -r priority candidate_mode; do
+        profile_exists "$candidate_mode" && echo "$priority $candidate_mode"
+    done
+}
+profile_rank() {
+    ordered_profiles | awk -v m="$1" '$2==m{print $1;exit}'
+}
+uplink_healthy() {
+    route_device="$(non_vpn_default_device)"
+    [ -n "$route_device" ] || return 1
+    case "$(current_mode)" in ap | wds)
+        [ "$route_device" = br-lan ] || return 1
+        ip -4 addr show dev br-lan 2>/dev/null | grep -q 'inet ' || return 1
+        ;;
+    esac
+    ping -I "$route_device" -c 1 -W 2 "$DNS_FALLBACK_1" >/dev/null 2>&1 || ping -I "$route_device" -c 1 -W 2 "$WDS_TEST_IP2" >/dev/null 2>&1
+}
+has_carrier() {
+    for interface in "$@"; do
+        [ "$(cat "/sys/class/net/$interface/carrier" 2>/dev/null)" = 1 ] && return 0
+    done
+    return 1
+}
+mode_possible() {
+    case "$1" in router) has_carrier wan ;; ap) has_carrier lan1 lan2 lan3 wan ;; *) return 0 ;; esac
+}
+mode_in_cooldown() {
+    timestamp="$(cat "$COOLDOWN.$1" 2>/dev/null)"
+    case "$timestamp" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$((timestamp + AUTO_COOLDOWN))" ]
+}
+manual_pause_active() {
+    timestamp="$(cat "$PAUSE" 2>/dev/null)"
+    case "$timestamp" in '' | *[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$((timestamp + AUTO_MANUAL_PAUSE))" ]
+}
+try_mode() {
+    OLD="$(current_mode)"
+    NEW="$1"
+    [ "$NEW" != "$OLD" ] || return 0
+    manual_pause_active && return 1
+    logger -t mxauto "Trying $NEW from $OLD"
+    if load_profile "$NEW"; then
+        sleep 12
+        health_attempt=0
+        while [ "$health_attempt" -lt 3 ]; do
+            uplink_healthy && {
+                logger -t mxauto "Using $NEW"
+                return 0
+            }
+            health_attempt=$((health_attempt + 1))
+            sleep 5
+        done
+    fi
+    date +%s >"$COOLDOWN.$NEW"
+    logger -t mxauto "$NEW failed health check; restoring $OLD"
+    load_profile "$OLD"
+    return 1
+}
+evaluate_profiles() {
+    manual_pause_active && return
+    [ "$(ordered_profiles | wc -l)" -ge 2 ] || return
+    CUR="$(current_mode)"
+    current_rank="$(profile_rank "$CUR")"
+    [ -n "$current_rank" ] || return
+    if uplink_healthy; then
+        FAIL=0
+        NOW="$(date +%s)"
+        [ "$NOW" -ge "$((LAST_TRY + AUTO_RETRY_INTERVAL))" ] || return
+        LAST_TRY="$NOW"
+        for candidate_mode in $(ordered_profiles | awk -v r="$current_rank" '$1<r{print $2}'); do
+            mode_in_cooldown "$candidate_mode" && continue
+            mode_possible "$candidate_mode" || continue
+            try_mode "$candidate_mode" && return
+        done
+    else
+        FAIL=$((FAIL + 1))
+        [ "$FAIL" -ge 3 ] || return
+        FAIL=0
+        for candidate_mode in $(ordered_profiles | awk -v c="$CUR" '$2!=c{print $2}'); do
+            mode_in_cooldown "$candidate_mode" && continue
+            mode_possible "$candidate_mode" || continue
+            try_mode "$candidate_mode" && return
+        done
+    fi
+}
+case "$1" in
+    service)
+        FAIL=0
+        LAST_TRY=0
+        while true; do
+            evaluate_profiles
+            sleep "$AUTO_INTERVAL"
+        done
+        ;;
+    once)
+        FAIL=2
+        LAST_TRY=0
+        evaluate_profiles
+        ;;
+    status)
+        echo "Current: $(current_mode)"
+        ordered_profiles
+        ;;
+    *)
+        echo 'mxauto: status|once|service'
+        exit 1
+        ;;
+esac

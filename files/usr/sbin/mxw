@@ -1,0 +1,43 @@
+#!/bin/sh
+. /usr/lib/mxc
+[ "$(current_mode)" = wds ] || exit 1
+STA=''
+for interface in $(iw dev 2>/dev/null | awk '/Interface/{i=$2}/type managed/{print i}'); do
+    [ -e "/sys/class/net/br-lan/brif/$interface" ] && {
+        STA=$interface
+        break
+    }
+done
+[ -n "$STA" ] || {
+    echo RED
+    exit
+}
+iw dev "$STA" link 2>/dev/null | grep -q '^Connected to ' || {
+    echo RED
+    exit
+}
+iw dev "$STA" info 2>/dev/null | grep -q '4addr: on' || {
+    echo ORANGE
+    exit
+}
+[ -e "/sys/class/net/br-lan/brif/$STA" ] || {
+    echo ORANGE
+    exit
+}
+IP="$(ip -4 addr show dev br-lan 2>/dev/null | awk '/inet /{sub(/\/.*/,"",$2);print $2;exit}')"
+[ -n "$IP" ] && ip -4 route show default dev br-lan 2>/dev/null | grep -q '^default ' || {
+    echo ORANGE
+    exit
+}
+if ! ping -I br-lan -c 1 -W 1 "$DNS_FALLBACK_1" >/dev/null 2>&1 && ! ping -I br-lan -c 1 -W 1 "$WDS_TEST_IP2" >/dev/null 2>&1; then
+    echo ORANGE
+    exit
+fi
+OK=0
+for device in $(ubus call network.interface.lan status 2>/dev/null | jsonfilter -e '@["dns-server"][*]' 2>/dev/null); do
+    dig -b "$IP" +time=1 +tries=1 +short @"$device" "$DNS_TEST_NAME" 2>/dev/null | grep -q . && {
+        OK=1
+        break
+    }
+done
+[ "$OK" = 1 ] && echo GREEN || echo YELLOW

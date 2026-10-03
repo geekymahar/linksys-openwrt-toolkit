@@ -1,0 +1,108 @@
+#!/bin/sh
+. /usr/lib/router-defaults/core.sh || exit 1
+STORE="$SAMBA_USER_STORE"
+ok() { printf '{"ok":true}\n'; }
+fail() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
+valid_user() { printf '%s\n' "$USER_NAME" | LC_ALL=C grep -Eq '^mxsmb_[a-z][a-z0-9_]{0,19}$'; }
+exists_unix() { awk -F: -v n="$USER_NAME" '$1==n { found=1 } END { exit !found }' /etc/passwd; }
+managed() { valid_user && [ -f "$STORE/$USER_NAME" ] && exists_unix; }
+case "$1" in
+    list)
+        printf '{"users":{},"add":{"username":"","password":""},"password":{"username":"","password":""},"disable":{"username":""},"enable":{"username":""},"remove":{"username":""}}\n'
+        exit 0
+        ;;
+    call) ;;
+    *) exit 1 ;;
+esac
+if [ "$2" = users ]; then
+    printf '{"users":['
+    SEP=
+    for F in "$STORE"/mxsmb_*; do
+        [ -f "$F" ] || continue
+        USER_NAME=${F##*/}
+        managed || continue
+        STATUS=$(cat "$F" 2>/dev/null)
+        [ "$STATUS" = disabled ] || STATUS=enabled
+        printf '%s{"name":"%s","status":"%s"}' "$SEP" "$USER_NAME" "$STATUS"
+        SEP=,
+    done
+    printf ']}\n'
+    exit 0
+fi
+case "$2" in add | password | disable | enable | remove) ;; *)
+    fail 'Unsupported operation'
+    exit 0
+    ;;
+esac
+REQUEST=$(cat)
+USER_NAME=$(printf '%s' "$REQUEST" | jsonfilter -e '@.username' 2>/dev/null)
+valid_user || {
+    fail 'Use a name beginning mxsmb_ and lowercase letters, digits or underscore'
+    exit 0
+}
+if [ "$2" = add ] || [ "$2" = password ]; then
+    PASSWORD=$(printf '%s' "$REQUEST" | jsonfilter -e '@.password' 2>/dev/null)
+    [ "${#PASSWORD}" -ge 12 ] && [ "${#PASSWORD}" -le 127 ] && ! printf '%s' "$PASSWORD" | LC_ALL=C grep -q '[[:cntrl:]]' || {
+        fail 'Password must contain 12–127 characters and no control characters'
+        exit 0
+    }
+fi
+if [ "$2" = add ]; then
+    [ ! -e "$STORE/$USER_NAME" ] && ! exists_unix || {
+        fail 'Account already exists'
+        exit 0
+    }
+    awk -F: -v group="$SAMBA_USER_GROUP" '$3==group { found=1 } END { exit !found }' /etc/group || {
+        fail 'OpenWrt users group (GID 100) is missing'
+        exit 0
+    }
+    useradd -M -g "$SAMBA_USER_GROUP" -s /bin/false -d /var/empty "$USER_NAME" >/dev/null 2>&1 || {
+        fail 'Could not create local account'
+        exit 0
+    }
+    if ! printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" | smbpasswd -s -a "$USER_NAME" >/dev/null 2>&1; then
+        userdel "$USER_NAME" >/dev/null 2>&1 || true
+        fail 'Could not create Samba account'
+        exit 0
+    fi
+    printf 'enabled\n' >"$STORE/$USER_NAME"
+    chmod 600 "$STORE/$USER_NAME"
+    ok
+    exit 0
+fi
+managed || {
+    fail 'Managed account not found'
+    exit 0
+}
+case "$2" in
+    password) printf '%s\n%s\n' "$PASSWORD" "$PASSWORD" | smbpasswd -s "$USER_NAME" >/dev/null 2>&1 || {
+        fail 'Could not update Samba password'
+        exit 0
+    } ;;
+    disable)
+        smbpasswd -d "$USER_NAME" >/dev/null 2>&1 || {
+            fail 'Could not disable Samba account'
+            exit 0
+        }
+        printf 'disabled\n' >"$STORE/$USER_NAME"
+        ;;
+    enable)
+        smbpasswd -e "$USER_NAME" >/dev/null 2>&1 || {
+            fail 'Could not enable Samba account'
+            exit 0
+        }
+        printf 'enabled\n' >"$STORE/$USER_NAME"
+        ;;
+    remove)
+        smbpasswd -x "$USER_NAME" >/dev/null 2>&1 || {
+            fail 'Could not remove Samba credentials'
+            exit 0
+        }
+        userdel "$USER_NAME" >/dev/null 2>&1 || {
+            fail 'Samba credentials removed, but local account remains; remove it manually'
+            exit 0
+        }
+        rm -f "$STORE/$USER_NAME"
+        ;;
+esac
+ok

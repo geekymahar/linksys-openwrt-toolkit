@@ -1,0 +1,8 @@
+#!/bin/sh
+. /usr/lib/router-defaults/core.sh || return 1
+. /usr/lib/router-defaults/network-functions.sh || return 1
+. /usr/lib/router-defaults/firewall-functions.sh || return 1
+. /usr/lib/router-defaults/wireless-functions.sh || return 1
+. /usr/lib/router-defaults/profiles.sh || return 1
+. /usr/lib/router-defaults/input.sh || return 1
+. /usr/lib/router-defaults/runtime.sh || return 1

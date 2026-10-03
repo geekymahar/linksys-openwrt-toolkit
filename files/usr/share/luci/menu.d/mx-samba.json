@@ -1,0 +1,8 @@
+{
+  "admin/services/samba-users": {
+    "title": "Samba Users",
+    "order": 45,
+    "action": { "type": "view", "path": "samba4/users" },
+    "depends": { "acl": [ "mx-samba" ] }
+  }
+}

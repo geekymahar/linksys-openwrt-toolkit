@@ -1,0 +1,98 @@
+#!/bin/sh
+. /usr/lib/mxc
+find_usb() {
+    for device_path in /sys/class/net/*; do
+        [ -e "$device_path" ] || continue
+        interface=${device_path##*/}
+
+        case "$interface" in lo | br-* | lan* | wan | wlan* | phy* | tailscale* | ifb*) continue ;; esac
+        value="$(readlink -f "/sys/class/net/$interface/device" 2>/dev/null)"
+        echo "$value" | grep -q '/usb' && {
+            echo "$interface"
+            return 0
+        }
+    done
+    return 1
+}
+restore_route_metrics() {
+    mode_name="$(current_mode)"
+    case "$mode_name" in
+        repeater)
+            uci -q set "network.wwanp.metric=$METRIC_PRIMARY_WIFI"
+            uci -q set "network.wwanb.metric=$METRIC_BACKUP_WIFI"
+            [ "$(uci -q get network.wan.mx_priority)" = wan ] && uci set "network.wan.metric=$METRIC_WAN_PREFERRED" || uci set "network.wan.metric=$METRIC_WAN_BACKUP"
+            ;;
+        *) uci set "network.wan.metric=$METRIC_WAN_DEFAULT" ;;
+    esac
+}
+apply_usb() {
+    ROLE="$1"
+    interface="$(find_usb)"
+    [ -n "$interface" ] || {
+        echo 'No USB tether interface'
+        return 1
+    }
+    uci set network.usbwan='interface'
+    uci set network.usbwan.device="$interface"
+    uci set network.usbwan.proto='dhcp'
+    restore_route_metrics
+    if [ "$ROLE" = primary ]; then
+        uci set "network.usbwan.metric=$METRIC_USB_PRIMARY"
+        uci set "network.wan.metric=$METRIC_WAN_BACKUP"
+        uci -q get network.wwanp >/dev/null && uci set "network.wwanp.metric=$METRIC_WIFI_USB_BACKUP"
+    else
+        uci set "network.usbwan.metric=$METRIC_USB_BACKUP"
+    fi
+    zone_section="$(find_firewall_zone wan)"
+    [ -n "$zone_section" ] && {
+        uci -q del_list "${zone_section}.network=usbwan"
+        uci add_list "${zone_section}.network=usbwan"
+    }
+    uci commit network
+    uci commit firewall
+    printf "LAST_ROLE='%s'\n" "$ROLE" >/etc/mx4200/usb.conf
+    chmod 600 /etc/mx4200/usb.conf
+    /etc/init.d/network restart
+    /etc/init.d/firewall restart
+    echo "USB $ROLE: $interface"
+}
+off_usb() {
+    uci -q delete network.usbwan
+    zone_section="$(find_firewall_zone wan)"
+    [ -n "$zone_section" ] && uci -q del_list "${zone_section}.network=usbwan"
+    restore_route_metrics
+    uci commit network
+    uci commit firewall
+    [ "${1:-}" = quiet ] || {
+        /etc/init.d/network restart
+        /etc/init.d/firewall restart
+        echo 'USB off'
+    }
+}
+case "${1:-}" in
+    detect)
+        interface="$(find_usb)"
+        [ -n "$interface" ] && echo "USB tether interface: $interface" || echo 'No USB interface'
+        ;;
+    primary | backup) apply_usb "$1" ;;
+    off) off_usb ;;
+    off-quiet) off_usb quiet ;;
+    menu | '')
+        interface="$(find_usb)"
+        echo "USB: ${interface:-none}"
+        LAST=''
+        [ -f /etc/mx4200/usb.conf ] && . /etc/mx4200/usb.conf && LAST="$LAST_ROLE"
+        [ -n "$LAST" ] && echo "USB role: $LAST"
+        echo '1=Restore last USB role  2=Primary route  3=Backup route'
+        echo '4=Disable USB tethering  0=Cancel'
+        printf 'Choose: '
+        read -r choice
+        case "$choice" in
+            1) [ -n "$LAST" ] && apply_usb "$LAST" || echo 'No saved role' ;;
+            2) apply_usb primary ;;
+            3) apply_usb backup ;;
+            4) off_usb ;;
+        esac
+        ;;
+    *) echo 'mxu: menu|detect|primary|backup|off' ;;
+esac

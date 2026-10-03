@@ -1,0 +1,226 @@
+#!/bin/sh
+. /usr/lib/mxc
+disable_usb_before_mode_change() {
+    uci -q get network.usbwan >/dev/null 2>&1 && {
+        echo 'USB tether off...'
+        /usr/sbin/mxu off-quiet
+    }
+}
+prepare_mode_change() {
+    TARGET="$1"
+    date +%s >/tmp/mxauto-manual
+    disable_usb_before_mode_change
+    [ "$(current_mode)" != "$TARGET" ] && save_current_profile
+}
+router_menu() {
+    CUR="$(current_mode)"
+    echo
+    echo "Mode: $CUR"
+    [ "$CUR" = router ] && echo 'Router active.'
+    echo
+    profile_exists router && print_profile_summary router
+    echo
+    echo '1=Saved router profile  2=First-boot baseline  0=Cancel'
+    [ "$CUR" = router ] && echo '3=Save current router settings'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in
+        1) profile_exists router && {
+            prepare_mode_change router
+            prompt_auto_priority router
+            load_profile router
+        } || echo 'No router profile' ;;
+        2)
+            disable_usb_before_mode_change
+            [ "$CUR" = router ] && save_profile router
+            [ "$CUR" != router ] && save_current_profile
+            prompt_auto_priority router
+            load_profile router-baseline || echo 'No baseline'
+            ;;
+        3) [ "$CUR" = router ] && {
+            save_profile router
+            prompt_auto_priority router
+        } ;;
+    esac
+}
+repeater_menu() {
+    echo
+    echo '1=WDS: bridge/upstream DHCP; upstream AP must support WDS'
+    echo '2=Routed repeater: own LAN/DHCP; works with a normal Wi-Fi AP'
+    echo '0=Cancel'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in 1) temporary_file=wds ;; 2) temporary_file=repeater ;; *) return ;; esac
+    echo
+    if profile_exists "$temporary_file"; then
+        print_profile_summary "$temporary_file"
+        echo
+        echo '1=Use saved settings  2=Scan and enter Wi-Fi credentials  0=Cancel'
+        printf 'Choose: '
+        read -r answer
+        case "$answer" in
+            1)
+                prepare_mode_change "$temporary_file"
+                prompt_auto_priority "$temporary_file"
+                load_profile "$temporary_file"
+                ;;
+            2) exec /root/mxr "$temporary_file" ;;
+        esac
+    else
+        echo 'No saved profile; starting new setup.'
+        exec /root/mxr "$temporary_file"
+    fi
+}
+ap_menu() {
+    echo '1=Restore saved wired AP'
+    echo '2=Configure wired AP; Ethernet ports become LAN'
+    echo '3=Change isolated Management Wi-Fi password  0=Cancel'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in
+        1) profile_exists ap && {
+            prepare_mode_change ap
+            prompt_auto_priority ap
+            load_profile ap
+        } || echo 'No AP profile' ;;
+        2) /root/mxa ;;
+        3)
+            [ "$(current_mode)" = ap ] || {
+                echo 'Wired AP mode required'
+                return
+            }
+            read_secret 'New Management Wi-Fi password: '
+            password=$SECRET
+            [ "${#password}" -ge 8 ] && [ "${#password}" -le 63 ] || {
+                echo 'Password must be 8-63 characters'
+                return
+            }
+            uci set wireless.mx_mgmt.key="$password"
+            uci commit wireless
+            save_profile ap
+            wifi reload "$RADIO_24"
+            ;;
+    esac
+}
+backhaul_menu() {
+    case "$(current_mode)" in wds | repeater) ;; *)
+        echo 'Repeater required.'
+        return
+        ;;
+    esac
+    echo '1=Auto: primary plus configured backup'
+    echo '2=5 GHz primary only  3=2.4 GHz backup only  0=Cancel'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in 1) /usr/sbin/mxb auto ;; 2) /usr/sbin/mxb primary ;; 3) /usr/sbin/mxb backup ;; esac
+}
+print_status() {
+    MODE="$(current_mode)"
+    echo "Mode: $MODE"
+    echo "Host: $(uci -q get system.@system[0].hostname)"
+    echo
+    echo 'Routes:'
+    ip -4 route show default
+    GW="$(ip -4 route show default 2>/dev/null | awk '/^default /{for(i=1;i<=NF;i++)if($i=="via"){print $(i+1);exit}}')"
+    [ -n "$GW" ] && echo "Upstream gateway: $GW"
+    echo
+    if [ "$MODE" = wds ]; then
+        for interface in $(iw dev 2>/dev/null | awk '/Interface/{i=$2}/type managed/{print i}'); do
+            echo "--- $interface ---"
+            iw dev "$interface" link 2>/dev/null
+            iw dev "$interface" info 2>/dev/null | grep -E 'type|channel|4addr' || true
+        done
+        printf 'WDS health: '
+        /usr/sbin/mxw 2>/dev/null || true
+        ip -4 addr show dev br-lan 2>/dev/null | awk '/inet /{print "WDS upstream IP: "$2;exit}'
+        MIP="$(uci -q get network.mgmt.ipaddr 2>/dev/null)"
+        [ -n "$MIP" ] || MIP="$MGMT_IP"
+        echo "Mgmt IP: $MIP"
+    else
+        for iteration in wwanp wwanb; do
+            ubus call network.interface.$iteration status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null | sed "s/^/$iteration IPv4: /"
+        done
+        ip -4 addr show br-lan 2>/dev/null | awk '/inet /{print "LAN: "$2}'
+    fi
+    [ "$MODE" = ap ] && echo "Management: $(uci -q get wireless.mx_mgmt.ssid) at $(uci -q get network.mgmt.ipaddr)"
+    echo
+    [ -f /tmp/mx4200-led-state ] && {
+        echo 'LED:'
+        cat /tmp/mx4200-led-state
+    }
+    if [ -x /usr/bin/mxls ]; then
+        /usr/bin/mxls detect 2>/dev/null | sed 's/^/  /'
+    else
+        /usr/sbin/mxmod status
+    fi
+    uci -q get network.usbwan >/dev/null 2>&1 && {
+        echo
+        ubus call network.interface.usbwan status 2>/dev/null | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null | sed 's/^/USB IPv4: /'
+        ubus call network.interface.usbwan status 2>/dev/null | jsonfilter -e '@.l3_device' 2>/dev/null | sed 's/^/USB device: /'
+    }
+}
+led_menu() {
+    if ! /usr/sbin/mxmod status >/dev/null; then
+        echo 'The embedded LED module is missing or damaged; no automatic download runs.'
+        echo '1=Try a signed manual repair 0=Cancel'
+        printf 'Choose: '
+        read -r choice
+        [ "$choice" = 1 ] && {
+            /usr/sbin/mxmod once && echo 'LED module installed.' || echo 'LED module download unavailable.'
+        }
+        return
+    fi
+    echo '1=Detect hardware  2=Automatic  3=Show state'
+    echo '4-11=Force color (red, green, blue, purple, orange, yellow, teal, white)'
+    echo '12=LED off  0=Cancel'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in
+        1) /usr/bin/mxls detect ;;
+        2)
+            /etc/init.d/mxl enable
+            /etc/init.d/mxl restart
+            ;;
+        3) cat /tmp/mx4200-led-state 2>/dev/null || echo 'No LED state' ;;
+        4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12)
+            set -- red green blue purple orange yellow teal white off
+            shift $((choice - 4))
+            /etc/init.d/mxl stop
+            /usr/bin/mxls "$1"
+            ;;
+    esac
+}
+module_update_menu() {
+    echo 'Signed module install: 1=LED 2=Auto failover 3=Samba users 0=Cancel'
+    printf 'Choose: '
+    read -r choice
+    case "$choice" in 1 | 2 | 3)
+        set -- once auto-once samba-once
+        shift $((choice - 1))
+        /usr/sbin/mxmod "$1" && echo 'Updated.' || echo 'Update failed.'
+        ;;
+    esac
+}
+menu() {
+    while true; do
+        echo
+        echo '=== MX4200 ==='
+        echo "Current mode: $(current_mode)"
+        echo 'Router=own DHCP | Repeater=Wi-Fi uplink | Wired-AP=cable, upstream DHCP'
+        echo '1=Router profiles  2=Repeater/WDS  3=USB tether  4=Wi-Fi backhaul'
+        echo '5=Status  6=WDS diagnostics (WDS mode)  7=LED  8=Wired AP'
+        echo '9=Signed module install/update  0=Exit'
+        printf 'Choose: '
+        read -r choice
+        case "$choice" in
+            1) router_menu ;; 2) repeater_menu ;; 3) /usr/sbin/mxu menu ;; 4) backhaul_menu ;; 5) print_status ;; 6) /root/mxwds ;; 7) led_menu ;; 8) ap_menu ;; 9) module_update_menu ;; 0) exit ;;
+        esac
+    done
+}
+case "$1" in
+    router) router_menu ;; repeater) repeater_menu ;; ap) ap_menu ;; usb) /usr/sbin/mxu menu ;; backhaul) backhaul_menu ;; status) print_status ;; led) led_menu ;; update) module_update_menu ;; wdstest) /root/mxwds ;;
+    help | -h | --help)
+        cat /usr/share/router-defaults/help.txt
+        ;;
+    '') menu ;; *) menu ;;
+esac

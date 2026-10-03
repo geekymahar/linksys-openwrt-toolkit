@@ -1,0 +1,134 @@
+#!/bin/sh
+. /usr/lib/mxc
+BACKUP=/etc/mx4200/mwan3-repeater.backup
+STATE=/etc/mx4200/mwan3-repeater.state
+POLICY=mx4200_repeater
+SIG=/tmp/mx4200-mwan3-signature
+
+set_changed_option() {
+    option_value=$(uci -q get "$1" 2>/dev/null || true)
+    [ "$option_value" = "$2" ] || uci set "$1=$2"
+}
+interface_active() {
+    protocol=$(uci -q get "network.$1.proto" 2>/dev/null || true)
+    [ -n "$protocol" ] && [ "$protocol" != none ]
+}
+interface_metric() {
+    option_value=$(uci -q get "network.$1.metric" 2>/dev/null || true)
+    case "$option_value" in '' | *[!0-9]*) option_value=$METRIC_WAN_DEFAULT ;; esac
+    printf '%s' "$option_value"
+}
+uplink_signature() {
+    printf 'repeater'
+    for uplink in wan wwanp wwanb usbwan; do
+        printf '|%s:%s:%s' "$uplink" "$(uci -q get "network.$uplink.proto" 2>/dev/null || true)" "$(interface_metric "$uplink")"
+    done
+}
+default_rule() {
+    for rule in $(uci -q show mwan3 2>/dev/null | sed -n 's/^mwan3\.\([^.=]*\)=rule$/\1/p'); do
+        [ "$(uci -q get "mwan3.$rule.dest_ip" 2>/dev/null)" = 0.0.0.0/0 ] && [ "$(uci -q get "mwan3.$rule.family" 2>/dev/null)" != ipv6 ] && {
+            printf '%s' "$rule"
+            return
+        }
+    done
+}
+
+restore_mwan_configuration() {
+    [ -s "$BACKUP" ] || return 0
+    cp "$BACKUP" /etc/config/mwan3 || return 1
+    WAS_ENABLED=$(sed -n '1p' "$STATE" 2>/dev/null)
+    /etc/init.d/mwan3 restart >/dev/null 2>&1 || true
+    if [ "$WAS_ENABLED" != 1 ]; then
+        /etc/init.d/mwan3 stop >/dev/null 2>&1 || true
+        /etc/init.d/mwan3 disable >/dev/null 2>&1 || true
+    fi
+    rm -f "$BACKUP" "$STATE" "$SIG"
+}
+
+configure_mwan_policy() {
+    [ -x /etc/init.d/mwan3 ] && [ -f /etc/config/mwan3 ] || return 0
+    RULE=$(default_rule)
+    [ -n "$RULE" ] || {
+        logger -t mxroutehealth 'No IPv4 default rule in mwan3'
+        return 1
+    }
+    NEW_SIG=$(uplink_signature)
+    [ "$(cat "$SIG" 2>/dev/null)" = "$NEW_SIG" ] && [ "$(uci -q get "mwan3.$RULE.use_policy" 2>/dev/null)" = "$POLICY" ] && return 0
+    if [ ! -s "$BACKUP" ]; then
+        OLD_POLICY=$(uci -q get "mwan3.$RULE.use_policy" 2>/dev/null || true)
+        ENABLED=0
+        for LINK in /etc/rc.d/S*mwan3; do
+            [ -e "$LINK" ] && ENABLED=1
+        done
+        cp /etc/config/mwan3 "$BACKUP" || return 1
+        printf '%s\n%s\n' "$ENABLED" "$OLD_POLICY" >"$STATE"
+        chmod 600 "$BACKUP" "$STATE"
+    fi
+    OLD_POLICY=$(sed -n '2p' "$STATE" 2>/dev/null)
+    [ -n "$OLD_POLICY" ] || OLD_POLICY=balanced
+    MEMBERS=''
+    for uplink in wan wwanp wwanb usbwan; do
+        interface_active "$uplink" || continue
+        if [ "$(uci -q get "mwan3.$uplink" 2>/dev/null || true)" != interface ]; then
+            uci set "mwan3.$uplink=interface"
+        fi
+        set_changed_option "mwan3.$uplink.enabled" 1
+        set_changed_option "mwan3.$uplink.family" ipv4
+        set_changed_option "mwan3.$uplink.reliability" 1
+        set_changed_option "mwan3.$uplink.count" 1
+        set_changed_option "mwan3.$uplink.timeout" "$ROUTE_HEALTH_TIMEOUT"
+        set_changed_option "mwan3.$uplink.interval" "$ROUTE_HEALTH_INTERVAL"
+        set_changed_option "mwan3.$uplink.down" 1
+        set_changed_option "mwan3.$uplink.up" 1
+        uci -q delete "mwan3.$uplink.track_ip"
+        uci add_list "mwan3.$uplink.track_ip=$DNS_FALLBACK_1"
+        uci add_list "mwan3.$uplink.track_ip=$WDS_TEST_IP2"
+        MEMBER=mxroute_$uplink
+        uci -q delete "mwan3.$MEMBER"
+        uci set "mwan3.$MEMBER=member"
+        uci set "mwan3.$MEMBER.interface=$uplink"
+        uci set "mwan3.$MEMBER.metric=$(interface_metric "$uplink")"
+        uci set "mwan3.$MEMBER.weight=1"
+        MEMBERS="$MEMBERS $MEMBER"
+    done
+    [ -n "$MEMBERS" ] || {
+        logger -t mxroutehealth 'No active routed uplinks'
+        return 1
+    }
+    uci -q delete "mwan3.$POLICY"
+    uci set "mwan3.$POLICY=policy"
+    for MEMBER in $MEMBERS; do
+        uci add_list "mwan3.$POLICY.use_member=$MEMBER"
+    done
+    uci set "mwan3.$POLICY.last_resort=default"
+    for rule in $(uci -q show mwan3 2>/dev/null | sed -n 's/^mwan3\.\([^.=]*\)=rule$/\1/p'); do
+        FAMILY=$(uci -q get "mwan3.$rule.family" 2>/dev/null || true)
+        [ "$FAMILY" = ipv6 ] && continue
+        [ "$(uci -q get "mwan3.$rule.use_policy" 2>/dev/null)" = "$OLD_POLICY" ] || continue
+        uci set "mwan3.$rule.use_policy=$POLICY"
+        [ -n "$FAMILY" ] || uci set "mwan3.$rule.family=ipv4"
+    done
+    uci set "mwan3.$RULE.use_policy=$POLICY"
+    uci commit mwan3 || return 1
+    /etc/init.d/mwan3 enable >/dev/null 2>&1 || true
+    /etc/init.d/mwan3 restart >/dev/null 2>&1 || return 1
+    printf '%s\n' "$NEW_SIG" >"$SIG"
+}
+
+case "$1" in
+    service)
+        while :; do
+            if [ "$(current_mode)" = repeater ]; then
+                configure_mwan_policy || true
+            else
+                restore_mwan_configuration || true
+            fi
+            sleep "$ROUTE_HEALTH_INTERVAL"
+        done
+        ;;
+    once) [ "$(current_mode)" = repeater ] && configure_mwan_policy || restore_mwan_configuration ;;
+    *)
+        echo 'mxroutehealth: service|once'
+        exit 1
+        ;;
+esac

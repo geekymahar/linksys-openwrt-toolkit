@@ -1,0 +1,89 @@
+LINKSYS MX4200 V2 - OFFLINE COMMAND GUIDE
+
+Run mx to open the guided menu. Everything except an explicitly requested
+signed module update works offline. Set a root password and secure the initial
+open Wi-Fi networks before deployment.
+
+STATUS: mx status / mxstatus
+  Show mode, hostname, default routes, gateway, addresses, WDS health, USB and
+  LED state. Management addressing can change to avoid upstream subnet overlap.
+
+ROUTER: mx router / mxrouter
+  Restore a saved router profile or the first-boot baseline, or save current
+  router settings. Router mode serves its own LAN DHCP. Profiles replace the
+  network, wireless, DHCP, firewall and system UCI files; unsaved changes can
+  be lost. Saving/restoring a mode temporarily pauses automatic mode switching.
+
+REPEATER: mx repeater / mxrepeater
+  Routed repeater keeps its own LAN/DHCP and works with an ordinary upstream
+  AP. True WDS bridges upstream DHCP and needs compatible four-address support
+  on that AP. WDS reserves lan1 and the Management SSID for local management.
+  Setup scans primary 5 GHz, with four passes and a bounded radio/DFS wait.
+  Select a 2.4 GHz backup by reusing the upstream name/key or scanning another.
+  The upstream key and MX4200 client Wi-Fi key are separate inputs; WDS also
+  asks for a separate Management key. Keys must meet the displayed validation.
+  Use an exclusive WPA2/WPA3 backhaul. Open, OWE and WPA1 are refused. A PSK
+  cannot distinguish another AP that has been given the same SSID and secret.
+
+WIRED AP: mx ap / mxap
+  Restore or configure a wired AP. Every Ethernet socket, including WAN, joins
+  the upstream LAN, whose router supplies ordinary DHCP. The protected isolated
+  Management SSID remains available; its password can be changed independently.
+
+USB: mx usb / mxusb
+  Detect a USB network interface, select primary/backup routing, restore its
+  previous role or disable tethering. A saved role is not automatically reapplied
+  on USB insertion or reboot. Changing modes disables the active USB setup.
+
+BACKHAUL: mx backhaul
+  Select automatic primary/backup operation, 5 GHz only or 2.4 GHz only.
+  WDS switches by association and bridges one STA at a time. Routed repeater
+  uses mwan3 Internet probes and route metrics to prefer healthy uplinks.
+  ICMP reachability does not prove that every Internet application works.
+
+AUTO MODES: mxauto status / mxauto once
+  Status shows enabled profiles and their priorities (1 highest, 9 lowest).
+  Once runs one decision step and can change the mode, interrupting clients.
+  Failed trials restore the prior profile and apply a cooldown.
+
+WDS DIAGNOSTICS: mx wdstest / /root/mxwds
+  Show bridge addressing, routes, upstream DNS and WDS health. RED means no
+  association; ORANGE means bridge, address or Internet failure; YELLOW means
+  upstream DNS failure; GREEN means the checks passed.
+
+LED: mx led / mxled
+  Detect hardware, restore automatic indication, inspect state, force a color
+  or turn the LED off. Forced colors stop the automatic service until restored.
+  Green breathes with traffic. Red/blue indicates broken backhaul, yellow DNS
+  failure and purple double blink hostapd DFS wait. Teal cues backup and white
+  USB. Tailscale, WireGuard and OpenVPN traffic add distinct color overlays.
+  Direct hardware diagnosis: mxls detect; mxls rgb RED GREEN BLUE (0-255).
+
+SAMBA: LuCI Services > Samba Users
+  Create dedicated non-login accounts, change passwords, disable/enable or
+  remove accounts. Use the full account name in Network Shares > Allowed users.
+  No share, user, password, disk mount or filesystem ownership is invented.
+
+VPN
+  Tailscale, WireGuard and OpenVPN packages and firewall preparation are included.
+  Logins, private keys, peers and connections remain your responsibility.
+  Tailscale exit-node advertisement and accepted routes follow the central
+  configuration after login. No PBR policies are created automatically.
+
+SIGNED UPDATES: mx update
+  Explicitly update LED, automatic-mode/health or Samba software from a signed
+  embedded release. Defaults and saved profiles are not reapplied. New package
+  dependencies require a firmware rebuild. Nothing downloads at first boot.
+
+RECOVERY AND RESET
+  Automatic Linksys recovery is enabled. Use System > Advanced Reboot in LuCI
+  for deliberate image selection. WPS keeps standard OpenWrt behavior; there is
+  no multi-press shortcut. Recovery requires a usable image in the alternate slot.
+  Factory reset clears overlay settings and reapplies the defaults baked into
+  the current firmware, including initial open Wi-Fi. Normal reboot retains state.
+
+GLOBAL CONFIGURATION: /etc/router-defaults/config
+  This trusted root-only shell file holds defaults, not live user profiles.
+  Editing it does not immediately replace current UCI settings. Runtime tools
+  read relevant settings on their next invocation. Apply ordinary configuration
+  through the menus or LuCI and save a profile, not by rerunning first-boot setup.
