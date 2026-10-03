@@ -4,10 +4,10 @@ case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mx4200v2*) ;; *) ex
 command -v openssl >/dev/null 2>&1 || exit 1
 set -eu
 ACTION=${1:-all}
-case "$ACTION" in all|ui|auto|samba|led) ;; *) exit 1 ;; esac
+case "$ACTION" in all|auto|samba|led) ;; *) exit 1 ;; esac
 BASE='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2'
 STAGE="/tmp/mx-provision.$$"
-mkdir -p "$STAGE/modules/auto" "$STAGE/modules/samba" "$STAGE/modules/ui" "$STAGE/modules/led/rev3" "$STAGE/release"
+mkdir -p "$STAGE/modules/auto" "$STAGE/modules/samba" "$STAGE/modules/led/rev3" "$STAGE/release"
 trap 'rm -rf "$STAGE"' EXIT HUP INT TERM
 cat > "$STAGE/release.pub" <<'EOF_KEY'
 -----BEGIN PUBLIC KEY-----
@@ -20,12 +20,11 @@ fetch release/manifest.sig "$STAGE/release/manifest.sig"
 openssl pkeyutl -verify -pubin -inkey "$STAGE/release.pub" -rawin -in "$STAGE/release/manifest.txt" -sigfile "$STAGE/release/manifest.sig" >/dev/null 2>&1 || exit 1
 awk 'NR==1 {if ($0!="MX4200V2P2 1") exit 1;next}
 NR>1 {if (NF!=2 || length($1)!=64 || $1 ~ /[^0-9a-f]/ ||
-!($2=="uci-defaults.sh" || $2=="modules/auto/install.sh" || $2=="modules/samba/install.sh" || $2=="modules/ui/install.sh" || $2=="modules/led/rev3/install.sh") || seen[$2]++) exit 1; count++}
-END {if (NR!=6 || count!=5) exit 1}' "$STAGE/release/manifest.txt" || exit 1
+!($2=="uci-defaults.sh" || $2=="modules/auto/install.sh" || $2=="modules/samba/install.sh" || $2=="modules/led/rev3/install.sh") || seen[$2]++) exit 1; count++}
+END {if (NR!=5 || count!=4) exit 1}' "$STAGE/release/manifest.txt" || exit 1
 case "$ACTION" in
-all) FILES='uci-defaults.sh modules/ui/install.sh modules/auto/install.sh modules/samba/install.sh'
+all) FILES='uci-defaults.sh modules/auto/install.sh modules/samba/install.sh'
      [ "$(sed -n "s/^LED_AUTO_INSTALL='\([^']*\)'.*/\1/p" /etc/mx4200/base.conf)" != 1 ] || FILES="$FILES modules/led/rev3/install.sh" ;;
-ui) FILES='modules/ui/install.sh' ;;
 auto) FILES='modules/auto/install.sh' ;;
 samba) FILES='modules/samba/install.sh' ;;
 led) FILES='modules/led/rev3/install.sh' ;;
@@ -53,7 +52,7 @@ if [ "$ACTION" = all ]; then
     fi
 fi
 FAILED=0
-for ENTRY in 'ui modules/ui/install.sh' 'auto modules/auto/install.sh' 'samba modules/samba/install.sh' 'led modules/led/rev3/install.sh'; do
+for ENTRY in 'auto modules/auto/install.sh' 'samba modules/samba/install.sh' 'led modules/led/rev3/install.sh'; do
     set -- $ENTRY
     [ "$ACTION" = all ] || [ "$ACTION" = "$1" ] || continue
     [ "$ACTION" != all ] || [ "$1" != led ] || [ "$(sed -n "s/^LED_AUTO_INSTALL='\([^']*\)'.*/\1/p" /etc/mx4200/base.conf)" = 1 ] || continue

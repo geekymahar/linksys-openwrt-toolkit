@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULES = ["auto", "samba", "ui", "led/rev3", "provision"]
+MODULES = ["auto", "samba", "led/rev3", "provision"]
 RELEASE_FILES = ["uci-defaults.sh"] + [f"modules/{m}/install.sh" for m in MODULES if m != "provision"]
 
 

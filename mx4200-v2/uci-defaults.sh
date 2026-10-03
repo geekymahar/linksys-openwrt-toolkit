@@ -534,14 +534,13 @@ EOF
 cat > /usr/sbin/mxmod <<'EOF'
 #!/bin/sh
 BASE='https://raw.githubusercontent.com/geekymahar/linksys-openwrt-toolkit/main/mx4200-v2/modules/provision'
-HASH='7c6f370cd16004e0a46798918c746fc45d895317b161cc87b4a146828537bd14'
+HASH='ad471d9734def02cbd9d16ad39726789df60c4e0a1e38143c1bda8d4c04b7569'
 case "$1" in
 status|once) N=led;BIN=/usr/bin/mxls ;;
 auto-status|auto-once) N=auto;BIN=/usr/sbin/mxauto ;;
 samba-status|samba-once) N=samba;BIN=/usr/libexec/rpcd/mx.samba ;;
-ui-status|ui-once) N=ui;BIN=/usr/libexec/rpcd/mx.ui ;;
 provision) N=all ;;
-*) echo 'mxmod: provision|once|auto-once|samba-once|ui-once|status|auto-status|samba-status|ui-status';exit 1 ;;
+*) echo 'mxmod: provision|once|auto-once|samba-once|status|auto-status|samba-status';exit 1 ;;
 esac
 case "$1" in *status) [ -x "$BIN" ] && [ -s "/etc/mx4200/modules/$N.installed" ] && { echo "$N installed";exit 0; };echo "$N pending";exit 1;;esac
 T=/tmp/mx-provision-installer.$$
@@ -552,13 +551,11 @@ EOF
 chmod 755 /usr/sbin/mxmod
 cat > /usr/sbin/mxfirstboot <<'EOF'
 #!/bin/sh
-ready(){ [ -s /etc/mx4200/modules/ui.installed ]&&[ -x /usr/libexec/rpcd/mx.ui ]&&[ -s /www/luci-static/resources/view/mx4200/dashboard.js ]&&[ -s /www/luci-static/resources/mx4200/dashboard.css ]; }
-ready&&{ /etc/init.d/mxprovision disable;exit 0; }
 while :;do
 if ip -4 route show default 2>/dev/null|grep -q '^default ';then
 if mkdir /etc/mx4200/provision-attempted 2>/dev/null;then /usr/sbin/mxmod provision||logger -t mxprovision 'Core handoff unavailable';fi
-ready||/usr/sbin/mxmod ui-once||logger -t mxprovision 'UI retry unavailable'
-ready&&{ /etc/init.d/mxprovision disable;exit 0; }
+/etc/init.d/mxprovision disable
+exit 0
 fi
 sleep 60
 done
@@ -683,9 +680,9 @@ case "$C" in
 esac
 }
 mact(){
-echo 'Signed update: 1=UI 2=LED 3=Auto 4=Samba 0=Cancel'
+echo 'Signed update: 1=LED 2=Auto 3=Samba 0=Cancel'
 printf 'Choose: ';read -r C
-case "$C" in 1|2|3|4) set -- ui-once once auto-once samba-once;shift $((C-1));/usr/sbin/mxmod "$1"&&echo 'Updated; refresh LuCI.'||echo 'Update failed.';;esac
+case "$C" in 1|2|3) set -- once auto-once samba-once;shift $((C-1));/usr/sbin/mxmod "$1"&&echo 'Updated.'||echo 'Update failed.';;esac
 }
 menu(){
 while true; do
@@ -711,7 +708,7 @@ echo "mxap: wired AP; upstream DHCP; Management $MGMT_IP (fallback)"
 echo 'mxauto status: mode priorities 1-9, 0=off'
 echo 'mxusb: tether primary/backup/off; mxled: optional LED'
 echo 'mx menu 4: 5G/2.4G backhaul or auto'
-echo 'mx update: fetch signed Dashboard, LED, Auto or Samba module'
+echo 'mx update: fetch signed LED, Auto or Samba module'
 ;;
 '') menu;; *) menu;;
 esac
