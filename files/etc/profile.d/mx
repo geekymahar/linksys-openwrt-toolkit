@@ -7,6 +7,13 @@ alias mxled='/usr/sbin/mxm led'
 alias mxhelp='/usr/sbin/mxm help'
 case "$-" in
     *i*)
+        if [ "$(id -u)" = 0 ]; then
+            . /usr/lib/router-defaults/core.sh || exit 1
+            require_root_password || {
+                echo 'A root password must be set before this shell can continue.' >&2
+                exit 1
+            }
+        fi
         echo
         echo 'MX4200: run mx for guided router, repeater/WDS and USB setup.'
         echo 'Quick: mxstatus mxrouter mxrepeater mxap mxusb mxled | mxhelp'

@@ -63,6 +63,9 @@ def fixture
       exec /usr/bin/uci-real "$@"
     SHELL
     write_fixture(root, 'tmp/sysinfo/board_name', "linksys,mx4200v2\n")
+    write_fixture(root, 'etc/passwd', "root:x:0:0:root:/root:/bin/ash\n")
+    write_fixture(root, 'etc/group', "root:x:0:\n")
+    write_fixture(root, 'etc/shadow', "root:!:19000:0:99999:7:::\n")
     write_fixture(root, 'proc/sys/net/ipv4/ip_forward', "0\n")
     write_fixture(root, 'proc/sys/net/ipv6/conf/all/forwarding', "0\n")
     write_fixture(root, 'tmp/boot-env', "auto_recovery no\nboot_part 1\nmaxpartialboots 3\n")
@@ -153,12 +156,23 @@ def fixture
     UCI
     write_fixture(root, 'etc/config/uhttpd', "config uhttpd 'main'\n")
     write_fixture(root, 'etc/config/tailscale', "config tailscale 'settings'\n")
+    write_fixture(root, 'etc/shadow', "root:!:19000:0:99999:7:::\n")
     yield root
   end
 end
 
 fixture do |root|
   run(root, '/etc/uci-defaults/99-router-defaults')
+  root_shadow = File.read(File.join(root, 'etc/shadow')).lines.find { |line| line.start_with?('root:') }.split(':')[1]
+  assert(root_shadow == '!', 'Clean initialization does not bake a shared root password')
+  password_setup = <<~SHELL
+    . /usr/lib/router-defaults/core.sh
+    passwd() { printf '%s\\n' 'root:$6$test$fixture-hash:19000:0:99999:7:::' >/etc/shadow; }
+    require_root_password
+  SHELL
+  run(root, '/bin/sh', '-c', password_setup)
+  root_shadow = File.read(File.join(root, 'etc/shadow')).lines.find { |line| line.start_with?('root:') }.split(':')[1]
+  assert(root_shadow.start_with?('$6$test$'), 'First-login password helper applies the passwd result')
   enabled_services = File.read(File.join(root, 'tmp/service-log')).lines.map(&:strip)
   %w[mxb mxd mxauto mxroutehealth tailscale openvpn mxl].each do |service|
     assert(enabled_services.include?("#{service} enable"), "#{service} is enabled at boot")
@@ -187,13 +201,16 @@ fixture do |root|
   uci(root, 'set', 'network.mgmt=interface')
   uci(root, 'set', 'network.mgmt.ipaddr=172.29.251.1')
   uci(root, 'commit', 'network')
+  File.write(File.join(root, 'etc/shadow'), "root:$6$per-device$existing-hash:19000:0:99999:7:::\n")
   preserved = snapshot(root)
+  preserved_shadow = File.binread(File.join(root, 'etc/shadow'))
   run(root, '/etc/uci-defaults/99-router-defaults')
   assert(snapshot(root) == preserved, 'Preserved WDS settings are not replaced')
+  assert(File.binread(File.join(root, 'etc/shadow')) == preserved_shadow, 'Existing root password survives settings-preserving initialization')
   assert(File.read(File.join(root, 'etc/mx4200/mode')).strip == 'wds', 'Mode survives migration')
   run(root, '/bin/sh', '-c', '. /usr/lib/mxc && configure_access_point test_open "$RADIO_24" lan "LS-MX4200v2" "" none')
   assert(uci(root, 'get', 'wireless.test_open.encryption') == 'none', 'Runtime AP helper')
-  puts 'PASS: clean boot, radio/port/firewall parity, idempotence, recovery, preserved WDS, runtime AP helper'
+  puts 'PASS: clean boot, first-login password gate, radio/port/firewall parity, idempotence, recovery, preserved WDS, runtime AP helper'
 end
 fixture do |root|
   run(root, '/etc/uci-defaults/99-router-defaults')
@@ -202,11 +219,25 @@ fixture do |root|
   %w[network wireless dhcp firewall system].each do |package|
     FileUtils.cp(File.join(root, "etc/config/#{package}"), File.join(profile_directory, package))
   end
-  uci(root, '-c', profile_directory, 'add_list', 'network.@device[0].ports=wan')
-  uci(root, '-c', profile_directory, 'delete', 'network.wan.device')
-  uci(root, '-c', profile_directory, 'set', 'network.wan.proto=none')
-  uci(root, '-c', profile_directory, 'set', 'network.wan6.disabled=1')
-  uci(root, '-c', profile_directory, 'commit', 'network')
+  File.write(File.join(profile_directory, 'network'), <<~UCI)
+    config device 'lan_bridge'
+     option name 'br-lan'
+     option type 'bridge'
+     list ports 'lan1'
+     list ports 'lan2'
+     list ports 'lan3'
+     list ports 'wan'
+    config interface 'lan'
+     option device 'br-lan'
+     option proto 'static'
+     option ipaddr '192.168.40.1'
+     option netmask '255.255.255.0'
+    config interface 'wan'
+     option proto 'none'
+    config interface 'wan6'
+     option proto 'dhcpv6'
+     option disabled '1'
+  UCI
   run(root, '/bin/sh', '-c', 'MX4200_NO_RELOAD=1; . /usr/lib/mxc; load_profile repeater')
   assert(uci(root, 'get', 'network.wan.device') == 'wan', 'Legacy repeater restores physical WAN device')
   assert(uci(root, 'get', 'network.wan.proto') == 'dhcp', 'Legacy repeater restores WAN DHCP')
@@ -272,9 +303,11 @@ fixture do |root|
 end
 fixture do |root|
   initial = snapshot(root)
+  initial_shadow = File.binread(File.join(root, 'etc/shadow'))
   write_fixture(root, 'tmp/inject-failure', 'wireless.radio2.country=GB')
   run(root, '/etc/uci-defaults/99-router-defaults', success: false)
   assert(snapshot(root) == initial, 'Failure restores all backed-up UCI files')
+  assert(File.binread(File.join(root, 'etc/shadow')) == initial_shadow, 'Failure restores the previous root password hash')
   assert(!File.exist?(File.join(root, 'etc/router-defaults/applied-version')), 'Failure leaves no completion marker')
   assert(!File.exist?(File.join(root, 'etc/mx4200/provisioned')), 'Failure leaves no legacy completion marker')
   FileUtils.rm_f(File.join(root, 'tmp/inject-failure'))

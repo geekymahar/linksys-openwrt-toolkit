@@ -54,6 +54,19 @@ service_restart() {
     "/etc/init.d/$1" restart || error "Cannot restart service: $1"
 }
 
+root_password_is_set() {
+    awk -F: '$1 == "root" && $2 != "" && $2 !~ /^[!*]/ { found = 1 } END { exit !found }' /etc/shadow
+}
+
+require_root_password() {
+    [ "$(id -u)" = 0 ] || return 0
+    root_password_is_set && return 0
+    printf '\nA root password is required before using this router.\n'
+    passwd || return 1
+    root_password_is_set || error 'Root password is still unset'
+    log 'Root password set during interactive login'
+}
+
 # Shared by mode selection and LED diagnostics: prefer the lowest-metric
 # non-VPN default route without making the status depend on a VPN tunnel.
 non_vpn_default_device() {
