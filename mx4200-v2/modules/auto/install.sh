@@ -2,6 +2,9 @@
 # Install saved-mode switching locally; the service never downloads anything.
 case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in linksys,mx4200v2*) ;; *) echo 'MX4200 V2/P2 required' >&2; exit 1 ;; esac
 set -e
+if command -v fw_printenv >/dev/null 2>&1 && command -v fw_setenv >/dev/null 2>&1 && fw_printenv auto_recovery >/dev/null 2>&1;then
+	fw_setenv auto_recovery no >/dev/null 2>&1 || logger -t mx "Could not disable automatic partition recovery"
+fi
 cat > /usr/sbin/mxauto <<'EOF_AUTO'
 #!/bin/sh
 . /usr/lib/mxc
@@ -135,5 +138,39 @@ EOF_ROUTE_INIT
 chmod 755 /etc/init.d/mxroutehealth
 /etc/init.d/mxroutehealth enable
 /etc/init.d/mxroutehealth restart >/dev/null 2>&1 || true
+mkdir -p /etc/hotplug.d/button
+cat > /etc/hotplug.d/button/95-mx-partition <<'EOF_BUTTON'
+#!/bin/sh
+[ "${BUTTON:-}" = wps ] && [ "${ACTION:-}" = pressed ] || exit 0
+COUNT_FILE=/tmp/mx-partition-presses
+NOW=$(date +%s)
+COUNT=0
+if [ -r "$COUNT_FILE" ];then
+	read -r OLD_COUNT OLD_TIME < "$COUNT_FILE"
+	case "$OLD_COUNT" in ''|*[!0-9]*) OLD_COUNT=0;;esac
+	case "$OLD_TIME" in ''|*[!0-9]*) OLD_TIME=0;;esac
+	[ "$NOW" -ge "$OLD_TIME" ] && [ "$((NOW-OLD_TIME))" -le 60 ] && COUNT=$OLD_COUNT
+fi
+COUNT=$((COUNT+1));printf '%s %s\n' "$COUNT" "$NOW" > "$COUNT_FILE"
+[ "$COUNT" -ge 15 ] || exit 0
+rm -f "$COUNT_FILE"
+INFO=$(ubus -S call luci.advanced-reboot obtain_device_info 2>/dev/null) || { logger -t mx-slot 'Advanced Reboot device check failed';exit 1; }
+ERR=$(printf '%s' "$INFO" | jsonfilter -e '@.error' 2>/dev/null)
+[ -z "$ERR" ] || { logger -t mx-slot "Partition switch refused: $ERR";exit 1; }
+ACTIVE=$(printf '%s' "$INFO" | jsonfilter -e '@.device.partition_active' 2>/dev/null)
+case "$ACTIVE" in 1) TARGET=2;;2) TARGET=1;;*) logger -t mx-slot 'Cannot determine active partition';exit 1;;esac
+PARTS=$(printf '%s' "$INFO" | jsonfilter -e '@.partitions[*].number' 2>/dev/null)
+printf '%s\n' "$PARTS" | grep -qx "$TARGET" || { logger -t mx-slot "Partition $TARGET is unavailable";exit 1; }
+RESULT=$(ubus -S call luci.advanced-reboot boot_partition "{\"number\":\"$TARGET\"}" 2>/dev/null) || { logger -t mx-slot 'Advanced Reboot rejected partition switch';exit 1; }
+ERR=$(printf '%s' "$RESULT" | jsonfilter -e '@.error' 2>/dev/null)
+[ -z "$ERR" ] || { logger -t mx-slot "Partition switch refused: $ERR";exit 1; }
+logger -t mx-slot "15 WPS presses; rebooting to partition $TARGET"
+ubus -S call system reboot >/dev/null 2>&1 || {
+	ubus -S call luci.advanced-reboot boot_partition "{\"number\":\"$ACTIVE\"}" >/dev/null 2>&1 || true
+	logger -t mx-slot 'Reboot request failed; attempted to restore current partition'
+	exit 1
+}
+EOF_BUTTON
+chmod 755 /etc/hotplug.d/button/95-mx-partition
 touch /etc/sysupgrade.conf
-for F in /usr/sbin/mxauto /etc/init.d/mxauto /usr/sbin/mxroutehealth /etc/init.d/mxroutehealth;do grep -qxF "$F" /etc/sysupgrade.conf || echo "$F" >> /etc/sysupgrade.conf;done
+for F in /usr/sbin/mxauto /etc/init.d/mxauto /usr/sbin/mxroutehealth /etc/init.d/mxroutehealth /etc/hotplug.d/button/95-mx-partition;do grep -qxF "$F" /etc/sysupgrade.conf || echo "$F" >> /etc/sysupgrade.conf;done

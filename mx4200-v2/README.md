@@ -195,7 +195,9 @@ Optional package additions require a firmware rebuild and flash; signed module u
 
 ## Linksys dual-image recovery and persistence
 
-If `fw_printenv`/`fw_setenv` are available and the existing boot environment exposes both `auto_recovery` and `maxpartialboots`, first boot sets `auto_recovery=yes` and `maxpartialboots=3`. This prepares the Linksys recovery behavior; it does not force a partition switch or prove that both images are healthy. `luci-app-advanced-reboot` is included in the package list.
+If `fw_printenv`/`fw_setenv` are available and the boot environment exposes `auto_recovery`, first boot sets it to `no` so repeated failed boots do not automatically switch firmware partitions. `maxpartialboots` is left unchanged. `luci-app-advanced-reboot` is included and supports MX4200 V2/P2; use **System → Advanced Reboot** for an intentional partition switch. The Auto module also installs a WPS-button handler: 15 presses within 60 seconds ask Advanced Reboot to switch to the other detected partition, then reboot. Unsupported devices or a missing partition are refused. WPS button event mapping must be confirmed on the target hardware.
+
+On an already-provisioned router, changing `uci-defaults.sh` alone does not rerun first-boot setup. Install the updated signed Auto module with `mxmod auto-once` to set `auto_recovery=no` and install the WPS handler, or apply the setting manually with `fw_setenv auto_recovery no` if that variable exists.
 
 Profiles, module files, local helper scripts, and configuration paths are added to `/etc/sysupgrade.conf`. Whether an individual firmware upgrade preserves them also depends on the chosen sysupgrade settings. On a clean flash or factory reset, the first-boot script recreates the initial router configuration and its baseline profile. An upgrade that preserves settings skips this destructive setup.
 
