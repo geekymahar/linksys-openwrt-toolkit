@@ -171,6 +171,7 @@ printf 'Actual upstream: 1=WPA2-PSK 2=WPA1-PSK (no default): ';read -r ESEL||ret
 case "$ESEL" in 1)SEL_ENC=psk2;break;;2)SEL_ENC=psk;break;;*)echo 'Choose 1 or 2.';;esac
 done;;
 esac
+case "$SEL_ENC" in none|owe|psk|psk-mixed) echo 'Backhaul requires authenticated WPA2/WPA3; open/OWE/WPA1 is refused.';return 1;;esac
 if [ -n "$MATCH_SSID" ]&&[ -n "$REUSE_PASS" ]&&! nk "$SEL_ENC";then
 echo "$L network has no password; choose it separately."
 return 1
@@ -317,13 +318,16 @@ si(){ S=$1;R="$(uci -q get wireless.$S.device)";J="$(ubus call network.wireless 
 up(){ I="$(si $1)";[ -n "$I" ]&&iw dev "$I" link 2>/dev/null|grep -q '^Connected to ';}
 rp(){
 S=$1;M="$(mode)";case "$M" in wds|repeater);;*)return;;esac
+case "$(uci -q get wireless.$S.encryption)" in psk2|sae|sae-mixed);;*)return;;esac
 up "$S"&&return
 R="$(uci -q get wireless.$S.device)";Q="$(uci -q get wireless.$S.ssid)"
 [ -n "$R" ]&&[ -n "$Q" ]&&[ "$(uci -q get wireless.$S.disabled)" = 0 ]||return
 T=/tmp/mxb.$$;sr "$R" "$T" 20||{ rm -f "$T";return; }
 [ "$(mode)" = "$M" ]&&[ "$(uci -q get wireless.$S.device)" = "$R" ]&&[ "$(uci -q get wireless.$S.ssid)" = "$Q" ]&&[ "$(uci -q get wireless.$S.disabled)" = 0 ]&&! up "$S"||{ rm -f "$T";return; }
-LINE="$(awk -F '\t' -v s="$Q" '$1==s{print $2" "$5;exit}' "$T")";rm -f "$T"
-C=${LINE%% *};B=${LINE#* };case "$C" in ''|*[!0-9]*)return;;esac
+LINE="$(awk -F '\t' -v s="$Q" '$1==s{print $2"\t"$4"\t"$5;exit}' "$T")";rm -f "$T"
+C=$(printf '%s\n' "$LINE"|cut -f1);E=$(printf '%s\n' "$LINE"|cut -f2);B=$(printf '%s\n' "$LINE"|cut -f3)
+case "$C" in ''|*[!0-9]*)return;;esac
+[ "$(e2u "$E")" = "$(uci -q get wireless.$S.encryption)" ]||return
 [ -n "$B" ]||return
 CHANGED=0
 [ "$(uci -q get wireless.$S.bssid)" = "$B" ]||{ uci set wireless.$S.bssid="$B";CHANGED=1; }
@@ -713,15 +717,11 @@ done
 case "$1" in
 router) ract;; repeater) pact;; ap) aact;; usb) /usr/sbin/mxu menu;; backhaul) bact;; status) sact;; led) lact;; update) mact;; wdstest) /root/mxwds;;
 help|-h|--help)
-echo 'mx: guided setup | mxstatus: current mode, route, IPs, and LED'
-echo 'mxrouter: restore saved/baseline router or save current router'
-echo 'mxrepeater: WDS (upstream WDS required) or routed (normal AP)'
-echo '  scans 5 GHz primary and optional 2.4 GHz backup; routed WAN: LAN/uplink'
-echo "mxap: wired AP; all Ethernet ports LAN; upstream provides DHCP"
-echo 'mxusb: choose USB tether primary/backup/off | mxled: LED controls'
-echo 'mxauto status: show saved-mode failover priorities, if installed'
-echo 'mx menu 4: auto (both), 5 GHz only, or 2.4 GHz only backhaul'
-echo 'mx update: fetch signed LED, Auto or Samba module'
+echo 'mx: menu; mxstatus: mode, route, IPs'
+echo 'mxrouter: saved/baseline | mxrepeater: WDS/routed setup'
+echo 'mxap: wired AP | mxusb: tether | mxled: LED'
+echo 'mxauto status: saved-mode priorities (optional)'
+echo 'mx update: signed LED, Auto, Samba'
 ;;
 '') menu;; *) menu;;
 esac
