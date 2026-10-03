@@ -165,6 +165,7 @@ fixture do |root|
   run(root, '/etc/uci-defaults/99-router-defaults')
   root_shadow = File.read(File.join(root, 'etc/shadow')).lines.find { |line| line.start_with?('root:') }.split(':')[1]
   assert(root_shadow == '!', 'Clean initialization does not bake a shared root password')
+  assert(File.read(File.join(root, 'etc/profile.d/mx')).include?('require_root_password'), 'Interactive root profile invokes the password gate')
   password_setup = <<~SHELL
     . /usr/lib/router-defaults/core.sh
     passwd() { printf '%s\\n' 'root:$6$test$fixture-hash:19000:0:99999:7:::' >/etc/shadow; }

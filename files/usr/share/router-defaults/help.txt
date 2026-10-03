@@ -3,8 +3,8 @@ LINKSYS MX4200 V2 - OFFLINE COMMAND GUIDE
 Run mx to open the guided menu. Everything except an explicitly requested
 signed module update works offline. On the first interactive root shell login,
 set a root password when prompted. The shell will not continue until it is set.
-Initial Wi-Fi is open; secure it before connecting the device to an untrusted
-network.
+Initial Wi-Fi is open, so an unintended client could claim the first root login.
+Secure the SSIDs before deployment or connecting the device to an untrusted net.
 
 STATUS: mx status / mxstatus
   Show mode, hostname, default routes, gateway, addresses, WDS health, USB and

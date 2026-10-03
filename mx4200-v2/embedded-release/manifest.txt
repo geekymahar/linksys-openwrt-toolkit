@@ -28,6 +28,6 @@ samba b1b1c26ece52cf3a8a6a7958f6db8bf6ec661e55893385f3fb7f4dc14ad5ed5b 755 usr/l
 auto d16a23bb6faa3ac9077e836a9fbaaae0772acffad095e3c5c8eebf78faf3eb2f 755 usr/sbin/mxauto
 auto 3745c66e08ab4423509a16e12eab695bbb5163af994e48db54bc29c0d7d350d6 755 usr/sbin/mxroutehealth
 samba 5857cdd40d6df058cbc1af1792d43bbcced7e9f2ce16baea8df38398b5c68884 644 usr/share/luci/menu.d/mx-samba.json
-shared 3c49fe4b95a64fcbae025742dc627fa598720441298e5fff48fe471f018b8a4a 644 usr/share/router-defaults/help.txt
+shared 86c2b77a85ffc91fb1e3cf4cd18d31924f8c22294c034c8744b3ad301f239f42 644 usr/share/router-defaults/help.txt
 samba a14d308cfe6006da2ba9fac4eb1e5651c069099e44ee6a132c58b5b538c8d5fa 644 usr/share/rpcd/acl.d/mx-samba.json
 samba 490a2b316a0375ea85a65594f47887a19d23819226db4d3cb2eade6d9d4bf16f 644 www/luci-static/resources/view/samba4/users.js
