@@ -7,6 +7,17 @@ Encoding.default_external = Encoding::UTF_8
 ROOT = File.expand_path('..', __dir__)
 TREE = File.join(ROOT, 'files')
 failures = []
+allowed_payload_roots = %w[etc root usr www]
+(Dir.children(TREE) - allowed_payload_roots).each do |name|
+  failures << "Unexpected ImageBuilder FILES root: #{name}"
+end
+payload_noise = Dir.glob(File.join(TREE, '**', '*'), File::FNM_DOTMATCH).select do |path|
+  name = File.basename(path)
+  name == '.DS_Store' || name.match?(/\AREADME(?:\..*)?\z/i) || name.match?(/\.md\z/i)
+end
+payload_noise.each do |path|
+  failures << "Non-firmware documentation or metadata under files/: #{path.delete_prefix(TREE + '/') }"
+end
 shell_files = Dir.glob(File.join(TREE, '**', '*'), File::FNM_DOTMATCH).select do |path|
   File.file?(path) && !File.symlink?(path) && File.read(path).start_with?('#!/bin/sh')
 end

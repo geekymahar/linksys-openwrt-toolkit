@@ -47,7 +47,15 @@ Existing mode/provision markers skip destructive default configuration. That bra
 
 Router, routed repeater, true WDS and wired AP workflows remain available through `mx`. Saved profiles, priority-based automatic switching, authenticated backhaul scanning/BSSID rediscovery, WDS association-based switching, routed mwan3 probes, USB primary/backup selection, DNS fallback and management-subnet overlap avoidance are retained. The revision-3 LED behavior and Samba-only account page are embedded, not downloaded.
 
-VPN packages, firewall zones, ingress rules, forwarding sysctls, Tailscale integration and HTTPS redirection are retained. The firmware does not invent Tailscale authentication, WireGuard peers, OpenVPN connections, Samba shares/accounts, disk mounts or PBR policies. Package availability is not automatic configuration of every installed service; OpenWrt package defaults can enable their own services.
+VPN packages, firewall zones, ingress rules, forwarding sysctls, Tailscale integration and HTTPS redirection are retained. The firmware does not invent Tailscale authentication, WireGuard peers, OpenVPN connections, Samba shares/accounts, disk mounts or PBR policies.
+
+### Service Startup Policy
+
+The first-boot `services.sh` module enables `mxb`, `mxd`, `mxauto`, `mxroutehealth`, Tailscale and OpenVPN. It enables the LED service when `LED_AUTO_INSTALL='1'`. These services start through normal OpenWrt boot ordering after uci-defaults completes. `mxb` and `mxroutehealth` are mode-aware; `mxroutehealth` configures and enables mwan3 only in routed-repeater mode, then restores its prior configuration when leaving that mode.
+
+Enabling a daemon does not create a VPN connection. Tailscale requires the owner to authenticate it with `tailscale up` or LuCI; after the backend reports running, `mxd` applies the configured exit-node/route flags. OpenVPN's init service is enabled, but no client/server profile is created. WireGuard tools and protocol support are installed, but no peer or interface is created.
+
+ZeroTier is installed but is intentionally not enabled at boot. To opt in, run `/etc/init.d/zerotier enable` and start it with `/etc/init.d/zerotier start`, then join and authorize a real network using its network ID. Samba account management does not start/configure a share; PBR, Tor, UPnP, HTTPS DNS Proxy and other optional services likewise remain unconfigured unless set up separately. Package presence alone does not imply that the toolkit enables a daemon.
 
 Run `mx help` or `mxhelp` for the full offline guide. Legacy command names and SSH aliases remain available.
 
@@ -70,7 +78,7 @@ Your existing Docker container is used by default:
 
 Validation needs Ruby, BusyBox, ShellCheck and shfmt inside the container. Real-UCI tests additionally need the native UCI tooling described in `docs/validation.md`. The active tree, extensionless scripts, original shell-source syntax, JSON, ash compatibility, permissions, references, config variables, package parity and recovery policy are checked. There is no script-size check.
 
-Defaults: `BUILDER_CONTAINER=openwrt-mx4200v2-builder` and `IMAGEBUILDER_DIR=/work/openwrt-imagebuilder-25.12.5-qualcommax-ipq807x.Linux-x86_64`. The helper checks target/profile/version metadata, copies ImageBuilder into a case-sensitive Linux cache, stages the repository's `files/`, and invokes `make image` for only `linksys_mx4200v2`. It removes the conflicting default `wpad-basic-mbedtls` provider while retaining the original full `wpad-mbedtls` selection and every original package name.
+Defaults: `BUILDER_CONTAINER=openwrt-mx4200v2-builder` and `IMAGEBUILDER_DIR=/work/openwrt-imagebuilder-25.12.5-qualcommax-ipq807x.Linux-x86_64`. The helper checks target/profile/version metadata, copies ImageBuilder into a case-sensitive Linux cache, stages only the firmware overlay under `files/`, and invokes `make image` for only `linksys_mx4200v2`. The validator restricts the overlay to OpenWrt install roots (`etc`, `root`, `usr`, `www`) and rejects README/Markdown files and macOS metadata; project documentation, analysis, tools and build outputs remain outside the firmware. It removes the conflicting default `wpad-basic-mbedtls` provider while retaining the original full `wpad-mbedtls` selection and every original package name.
 
 Completed images, checksums, manifest and SBOM are copied to root `artifacts/`. Both `*-squashfs-factory.bin` and `*-squashfs-sysupgrade.bin` are generated. Select the correct image for your installation method; these helpers never flash or reboot a router. The Linux cache defaults to `/tmp/router-defaults-imagebuilder` inside Docker; set `IMAGEBUILDER_CACHE` to another case-sensitive container path to retain it across container recreation.
 

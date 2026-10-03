@@ -82,7 +82,7 @@ def fixture
     %w[ubus iw iwinfo jsonfilter useradd userdel smbpasswd sysctl reload_config wifi ifup ifdown].each do |command|
       write_fixture(root, "usr/bin/#{command}", "#!/bin/sh\nprintf '%s\\n' '#{command}' >> /tmp/command-log\nexit 0\n", executable: true)
     end
-    %w[network dnsmasq firewall mxauto mxroutehealth mxb mxd mxl tailscale openvpn rpcd uhttpd].each do |service|
+    %w[network dnsmasq firewall mxauto mxroutehealth mxb mxd mxl tailscale openvpn zerotier rpcd uhttpd].each do |service|
       write_fixture(root, "etc/init.d/#{service}", "#!/bin/sh\nprintf '%s %s\\n' '#{service}' \"$*\" >> /tmp/service-log\nexit 0\n", executable: true)
     end
     write_fixture(root, 'etc/rc.common', <<~SHELL, executable: true)
@@ -158,6 +158,11 @@ end
 
 fixture do |root|
   run(root, '/etc/uci-defaults/99-router-defaults')
+  enabled_services = File.read(File.join(root, 'tmp/service-log')).lines.map(&:strip)
+  %w[mxb mxd mxauto mxroutehealth tailscale openvpn mxl].each do |service|
+    assert(enabled_services.include?("#{service} enable"), "#{service} is enabled at boot")
+  end
+  assert(!enabled_services.include?('zerotier enable'), 'ZeroTier remains opt-in')
   assert(uci(root, 'get', 'network.lan.ipaddr') == '192.168.40.1', 'LAN address preserved')
   assert(uci(root, 'get', 'network.@device[0].ports') == 'lan1 lan2 lan3', 'LAN port mapping')
   assert(uci(root, 'get', 'wireless.radio2.channel') == '116', 'High-performance channel')

@@ -64,11 +64,18 @@ SAMBA: LuCI Services > Samba Users
   remove accounts. Use the full account name in Network Shares > Allowed users.
   No share, user, password, disk mount or filesystem ownership is invented.
 
-VPN
-  Tailscale, WireGuard and OpenVPN packages and firewall preparation are included.
-  Logins, private keys, peers and connections remain your responsibility.
-  Tailscale exit-node advertisement and accepted routes follow the central
-  configuration after login. No PBR policies are created automatically.
+VPN AND SERVICE STARTUP
+  Tailscale and OpenVPN init services are enabled at boot. This does not create
+  a connection: authenticate Tailscale with tailscale up or LuCI; provide an
+  OpenVPN profile separately. After Tailscale is running, mxd applies the
+  configured exit-node and accepted-route flags. WireGuard packages are present
+  but no peer/interface is created. No private keys or credentials are baked in.
+  ZeroTier is installed but is opt-in. Enable with /etc/init.d/zerotier enable,
+  start with /etc/init.d/zerotier start, then join and authorize your network.
+  mxauto, mxb, mxd and mxroutehealth are enabled at boot; LED starts when
+  LED_AUTO_INSTALL is 1. mwan3 is configured/enabled only for routed repeater.
+  Samba account management does not create shares. No PBR policy or other
+  optional service configuration is created automatically.
 
 SIGNED UPDATES: mx update
   Explicitly update LED, automatic-mode/health or Samba software from a signed
